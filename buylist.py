@@ -23,7 +23,7 @@ from ygo_tcgplayer_pricer import tcgplayer_catalog, tcgplayer_pricing  # noqa: E
 CONDITIONS = tcgplayer_pricing.CONDITIONS  # NM..Damaged — seller picks per row in Excel
 DEFAULT_CONDITION = tcgplayer_pricing.DEFAULT_CONDITION
 
-INDEX_CACHE = Path(os.environ.get("APPDATA", Path.home())) / "metastack card scanner" / "tcgp_index.json"
+INDEX_CACHE = Path(os.environ.get("APPDATA", Path.home())) / "metastack card scanner" / "tcgp_index_v2.json"
 INDEX_MAX_AGE = 7 * 86400  # ponytail: weekly rebuild; new sets mostly match by group name anyway
 _IDX = None
 
@@ -44,13 +44,15 @@ def _global_index():
         return _IDX
 
     base, ea = {}, {}
-    gids = [g["groupId"] for g in tcgplayer_catalog._all_groups()]
+    gname = {g["groupId"]: g["name"] for g in tcgplayer_catalog._all_groups()}
+    gids = list(gname)
     with ThreadPoolExecutor(max_workers=8) as pool:
-        for by_r, ea_r, _ in pool.map(tcgplayer_catalog.get_product_lookup, gids):
+        for gid, (by_r, ea_r, _) in zip(
+                gids, pool.map(tcgplayer_catalog.get_product_lookup, gids)):
             for k, v in by_r.items():
-                base.setdefault(k, v)
+                base.setdefault(k, dict(v, group=gname[gid]))
             for k, v in ea_r.items():
-                ea.setdefault(k, v)
+                ea.setdefault(k, dict(v, group=gname[gid]))
     INDEX_CACHE.parent.mkdir(parents=True, exist_ok=True)
     INDEX_CACHE.write_text(json.dumps(
         {"base": {"|".join(k): v for k, v in base.items()},
@@ -71,6 +73,32 @@ def _price_jobs(jobs, progress=None):
             if progress:
                 progress(i, len(jobs))
     return prices
+
+
+def tcgp_candidates(name, read_code):
+    """Candidate printings straight from the TCGPlayer catalog, keyed by the
+    set code read off the physical card. Fallback for when ygoprodeck's
+    per-card set list is missing the printing in hand (their lists lag —
+    e.g. Dark Magician's omits Maximum Gold: El Dorado entirely). The code
+    pattern narrows the field; a name-similarity floor keeps out neighbours
+    on the same page."""
+    import difflib
+
+    import scan_cards
+
+    gbase, _ = _global_index()
+    out = {}
+    for (number, rarity), prod in gbase.items():
+        if not scan_cards.code_matches(read_code, number):
+            continue
+        pname = prod.get("name", "").split(" (")[0]  # strip "(Extended Art)" etc.
+        if difflib.SequenceMatcher(None, name.lower(), pname.lower()).ratio() < 0.75:
+            continue
+        e = out.setdefault(number, {"set_code": number,
+                                    "set_name": prod.get("group", ""), "rarities": []})
+        if rarity.title() not in e["rarities"]:
+            e["rarities"].append(rarity.title())
+    return [dict(e, rarities=sorted(e["rarities"])) for _, e in sorted(out.items())]
 
 
 def build_options(cards, progress=None):

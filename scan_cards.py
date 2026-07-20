@@ -40,8 +40,15 @@ SCHEMA = {
                                        "Secret Rare; artwork overflowing its frame means "
                                        "Extended Art (append '(Extended Art)').",
                     },
+                    "text_snippet": {
+                        "type": ["string", "null"],
+                        "description": "The first ~12 words of the card's effect or flavor "
+                                       "text, exactly as printed. The text box is matte and "
+                                       "often more legible than the foil name — read it "
+                                       "carefully. Null only if fully unreadable.",
+                    },
                 },
-                "required": ["name", "set_code", "rarity_guess"],
+                "required": ["name", "set_code", "rarity_guess", "text_snippet"],
                 "additionalProperties": False,
             },
         }
@@ -106,33 +113,42 @@ def _fetch(param, value):
         return None
 
 
-def _find_card(name):
+def _find_card(name, snippet=None):
     """Exact match, then substring, then a misread-tolerant fallback: drop
     leading words until a substring search hits (glare mangles the start of a
-    name more often than the whole thing), and take the closest full name."""
+    name more often than the whole thing), then pick the candidate whose name
+    — and, when read, whose printed card text — best matches. The text box is
+    matte, so the snippet is often the most reliable thing in the photo."""
     import difflib
 
     for param in ("name", "fname"):
         data = _fetch(param, name)
         if data:
             return data[0]
+
+    def score(cand):
+        s = difflib.SequenceMatcher(None, name.lower(), cand["name"].lower()).ratio()
+        desc = cand.get("desc", "")
+        if snippet and desc:
+            t = difflib.SequenceMatcher(
+                None, snippet.lower(), desc[:2 * len(snippet)].lower()).ratio()
+            return (s + 2 * t) / 3  # the matte text outweighs the foil name
+        return s
+
     words = name.split()
     for i in range(1, len(words) - 1):
         data = _fetch("fname", " ".join(words[i:]))
         if data:
-            best = difflib.get_close_matches(
-                name, [c["name"] for c in data], n=1, cutoff=0.6)
-            if best:
-                return next(c for c in data if c["name"] == best[0])
-            return None  # suffix hit, but nothing plausibly close — misread too deep
+            best = max(data, key=score)
+            return best if score(best) >= 0.6 else None
     return None
 
 
-def db_lookup(name, set_code):
+def db_lookup(name, set_code, snippet=None):
     """Return (canonical_name, candidates): the card's printings grouped by
     set code, narrowed by whatever part of the code was readable.
     One candidate = resolved; several = the user picks."""
-    card = _find_card(name)
+    card = _find_card(name, snippet)
     if not card:
         return name, []
     groups = {}

@@ -340,7 +340,18 @@ class App:
                     continue
             self._page_sigs[sig] = name
             for c in found:
-                cname, cands = scan_cards.db_lookup(c["name"], c["set_code"])
+                cname, cands = scan_cards.db_lookup(c["name"], c["set_code"],
+                                                    c.get("text_snippet"))
+                if c["set_code"] and not any(
+                        scan_cards.code_matches(c["set_code"], k["set_code"])
+                        for k in cands):
+                    # ygoprodeck's per-card set list is missing this printing —
+                    # trust the code we read against the TCGPlayer catalog
+                    import buylist
+                    self.root.after(0, self.say, "Checking the TCGPlayer catalog…")
+                    extra = buylist.tcgp_candidates(cname, c["set_code"])
+                    if extra:
+                        cands = extra
                 card = {"photo": name, "name": cname, "read_code": c["set_code"] or "",
                         "sets": cands, "guess": c["rarity_guess"] or "",
                         "set_code": "", "set_name": "", "rarities": [], "rarity": ""}
