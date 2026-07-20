@@ -444,8 +444,9 @@ class App:
                              text=f"Scan {len(self.photos)} photo{'s' if len(self.photos) != 1 else ''}")
         self.export_act.enable(bool(self.cards))
         ambiguous = sum(1 for c in self.cards
-                        if len(c["rarities"]) > 1 or (len(c["sets"]) > 1 and not c["set_code"]))
-        self.say(f"{ambiguous} card{'s need' if ambiguous != 1 else ' needs'} a choice."
+                        if len(c["rarities"]) > 1 or not c["sets"]
+                        or (len(c["sets"]) > 1 and not c["set_code"]))
+        self.say(f"{ambiguous} card{'s need' if ambiguous != 1 else ' needs'} attention."
                  if ambiguous else "Done.")
 
     # --- table ----------------------------------------------------------------
@@ -460,7 +461,6 @@ class App:
             for i, (key, _, weight) in enumerate(COLS, start=1):
                 row.grid_columnconfigure(i, weight=weight, uniform="c")
             set_open = len(c["sets"]) > 1 and not c["set_code"]
-            vals = {"name": (c["name"], INK)}
             for i, (key, _, _) in enumerate(COLS, start=1):
                 click = None
                 if key == "rarity":
@@ -477,7 +477,7 @@ class App:
                     text = c["set_name"] or (f"{len(c['sets'])} possible" if set_open else "—")
                     fg = MUTED
                 else:
-                    text, fg = vals[key]
+                    text, fg = c["name"], INK
                 lbl = tk.Label(row, text=text, font=sans(9), fg=fg, bg=PAPER,
                                anchor="w", pady=5, cursor="hand2" if click else "arrow")
                 if click:
@@ -514,7 +514,7 @@ class App:
     # --- export ---------------------------------------------------------------
 
     def export(self):
-        if not self.cards or self.scanning:
+        if not self.cards or self.scanning or self.working:
             return
         import datetime
         path = filedialog.asksaveasfilename(
@@ -557,6 +557,8 @@ class App:
             os.startfile(Path(path).parent)
 
     def refresh(self):
+        if self.scanning or self.working:
+            return
         path = filedialog.askopenfilename(
             title="Re-price a buylist workbook", filetypes=[("Excel", "*.xlsx")])
         if not path:

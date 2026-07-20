@@ -1,15 +1,12 @@
 """Read Yu-Gi-Oh card names/sets/rarities from binder photos.
 
-Usage:
-    python scan_cards.py photo1.jpg [photo2.jpg ...]   # needs ANTHROPIC_API_KEY
-    python scan_cards.py --selftest                    # offline check of the DB lookup
+The engine behind gui.py: Claude vision reads each photo (handles foils/glare
+that break normal OCR), then each card is cross-referenced against the free
+YGOPRODeck database to resolve printings from the set code.
 
-Claude vision reads each photo (handles foils/glare that break normal OCR),
-then each card is cross-referenced against the free YGOPRODeck database to
-resolve the exact set name and printed rarity from the set code.
+    python scan_cards.py --selftest    # live check of the DB lookup
 """
 import base64
-import csv
 import json
 import sys
 import urllib.parse
@@ -183,24 +180,6 @@ def db_lookup(name, set_code, snippet=None):
     return card["name"], cands
 
 
-def main(paths):
-    import anthropic
-    client = anthropic.Anthropic()
-    writer = csv.writer(sys.stdout)
-    writer.writerow(["photo", "name", "set_code", "set_name", "rarity", "rarity_guess"])
-    for path in paths:
-        for c in read_photo(client, path):
-            name, cands = db_lookup(c["name"], c["set_code"])
-            if len(cands) == 1:
-                code, set_name, rarities = cands[0]["set_code"], cands[0]["set_name"], cands[0]["rarities"]
-            else:
-                code = c["set_code"] or ""
-                set_name = f"ambiguous ({len(cands)} printings)" if cands else ""
-                rarities = []
-            writer.writerow([path, name, code, set_name,
-                             " / ".join(rarities), c["rarity_guess"] or ""])
-
-
 def selftest():
     assert code_matches("SKE-EN0??", "SKE-EN020")
     assert code_matches("SKE-EN..?", "SKE-EN020")
@@ -227,9 +206,7 @@ def selftest():
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        sys.exit(__doc__)
-    if sys.argv[1] == "--selftest":
+    if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
         selftest()
     else:
-        main(sys.argv[1:])
+        sys.exit(__doc__)
