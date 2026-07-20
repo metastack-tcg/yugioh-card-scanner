@@ -320,46 +320,59 @@ class App:
         threading.Thread(target=self._scan_worker, args=(key,), daemon=True).start()
 
     def _scan_worker(self, key):
+        # done() must run no matter what dies in here — a stray exception
+        # otherwise kills the thread silently and the GUI hangs on "Scanning…"
         import anthropic
         client = anthropic.Anthropic(api_key=key)
-        for i, path in enumerate(self.photos, 1):
-            name = Path(path).name
-            self.root.after(0, self.say, f"Reading {name} ({i} of {len(self.photos)})…")
-            try:
-                found = scan_cards.read_photo(client, path)
-            except Exception as e:
-                self.root.after(0, messagebox.showerror, "Scan failed",
-                                f"{name}:\n{e}")
-                continue
-            sig = tuple((c["name"], c["set_code"]) for c in found)
-            if found and sig in self._page_sigs:
-                if not self._ask(
-                        "Duplicate page?",
-                        f"{name} shows exactly the same cards as "
-                        f"{self._page_sigs[sig]}.\n\nInclude it anyway?"):
+        try:
+            for i, path in enumerate(self.photos, 1):
+                name = Path(path).name
+                self.root.after(0, self.say,
+                                f"Reading {name} ({i} of {len(self.photos)}) — "
+                                "can take a minute per page…")
+                try:
+                    found = scan_cards.read_photo(client, path)
+                except Exception as e:
+                    self.root.after(0, messagebox.showerror, "Scan failed",
+                                    f"{name}:\n{e}")
                     continue
-            self._page_sigs[sig] = name
-            for c in found:
-                cname, cands = scan_cards.db_lookup(c["name"], c["set_code"],
-                                                    c.get("text_snippet"))
-                if not cands or (c["set_code"] and not any(
-                        scan_cards.code_matches(c["set_code"], k["set_code"])
-                        for k in cands)):
-                    # ygoprodeck's set list is missing this printing (or is
-                    # empty for a brand-new set) — trust the read code, or
-                    # failing that the name, against the TCGPlayer catalog
-                    import buylist
-                    self.root.after(0, self.say, "Checking the TCGPlayer catalog…")
-                    extra = buylist.tcgp_candidates(cname, c["set_code"] or "")
-                    if extra:
-                        cands = extra
-                card = {"photo": name, "name": cname, "read_code": c["set_code"] or "",
-                        "sets": cands, "guess": c["rarity_guess"] or "",
-                        "set_code": "", "set_name": "", "rarities": [], "rarity": ""}
-                if len(cands) == 1:
-                    resolve_set(card, cands[0])
-                self.root.after(0, self.add_card, card)
-        self.root.after(0, self.done)
+                sig = tuple((c["name"], c["set_code"]) for c in found)
+                if found and sig in self._page_sigs:
+                    if not self._ask(
+                            "Duplicate page?",
+                            f"{name} shows exactly the same cards as "
+                            f"{self._page_sigs[sig]}.\n\nInclude it anyway?"):
+                        continue
+                self._page_sigs[sig] = name
+                for c in found:
+                    try:
+                        cname, cands = scan_cards.db_lookup(
+                            c["name"], c["set_code"], c.get("text_snippet"))
+                    except Exception:
+                        cname, cands = c["name"], []
+                    if not cands or (c["set_code"] and not any(
+                            scan_cards.code_matches(c["set_code"], k["set_code"])
+                            for k in cands)):
+                        # ygoprodeck's set list is missing this printing (or is
+                        # empty for a brand-new set) — trust the read code, or
+                        # failing that the name, against the TCGPlayer catalog
+                        try:
+                            import buylist
+                            self.root.after(0, self.say,
+                                            "Checking the TCGPlayer catalog…")
+                            cands = buylist.tcgp_candidates(
+                                cname, c["set_code"] or "") or cands
+                        except Exception:
+                            pass  # a catalog hiccup must not kill the scan
+                    card = {"photo": name, "name": cname,
+                            "read_code": c["set_code"] or "",
+                            "sets": cands, "guess": c["rarity_guess"] or "",
+                            "set_code": "", "set_name": "", "rarities": [], "rarity": ""}
+                    if len(cands) == 1:
+                        resolve_set(card, cands[0])
+                    self.root.after(0, self.add_card, card)
+        finally:
+            self.root.after(0, self.done)
 
     def _ask(self, title, msg):
         """askyesno from a worker thread — runs the dialog on the UI thread."""

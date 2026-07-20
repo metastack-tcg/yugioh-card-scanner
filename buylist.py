@@ -38,21 +38,33 @@ def _global_index():
     if _IDX is not None:
         return _IDX
     if INDEX_CACHE.exists() and time.time() - INDEX_CACHE.stat().st_mtime < INDEX_MAX_AGE:
-        raw = json.loads(INDEX_CACHE.read_text())
-        _IDX = tuple({tuple(k.split("|", 1)): v for k, v in part.items()}
-                     for part in (raw["base"], raw["ea"]))
-        return _IDX
+        try:
+            raw = json.loads(INDEX_CACHE.read_text())
+            _IDX = tuple({tuple(k.split("|", 1)): v for k, v in part.items()}
+                         for part in (raw["base"], raw["ea"]))
+            return _IDX
+        except Exception:
+            pass  # corrupt cache — rebuild below
 
     base, ea = {}, {}
     gname = {g["groupId"]: g["name"] for g in tcgplayer_catalog._all_groups()}
-    gids = list(gname)
+    failed = 0
     with ThreadPoolExecutor(max_workers=8) as pool:
-        for gid, (by_r, ea_r, _) in zip(
-                gids, pool.map(tcgplayer_catalog.get_product_lookup, gids)):
+        futures = {pool.submit(tcgplayer_catalog.get_product_lookup, gid): gid
+                   for gid in gname}
+        for f in as_completed(futures):
+            gid = futures[f]
+            try:
+                by_r, ea_r, _ = f.result()
+            except Exception:
+                failed += 1  # one throttled group must not sink the other 650
+                continue
             for k, v in by_r.items():
                 base.setdefault(k, dict(v, group=gname[gid]))
             for k, v in ea_r.items():
                 ea.setdefault(k, dict(v, group=gname[gid]))
+    if failed and failed >= len(gname) // 2:
+        raise RuntimeError(f"TCGPlayer catalog unreachable ({failed} groups failed)")
     INDEX_CACHE.parent.mkdir(parents=True, exist_ok=True)
     INDEX_CACHE.write_text(json.dumps(
         {"base": {"|".join(k): v for k, v in base.items()},
