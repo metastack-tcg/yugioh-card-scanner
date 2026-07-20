@@ -88,7 +88,7 @@ def _price_jobs(jobs, progress=None):
     return prices
 
 
-def tcgp_candidates(name, read_code):
+def tcgp_candidates(name, read_code, min_ratio=0.75):
     """Candidate printings straight from the TCGPlayer catalog, keyed by the
     set code read off the physical card. Fallback for when ygoprodeck's
     per-card set list is missing the printing in hand (their lists lag —
@@ -108,7 +108,7 @@ def tcgp_candidates(name, read_code):
             continue
         pname = prod.get("name", "").split(" (")[0]  # strip "(Extended Art)" etc.
         m = difflib.SequenceMatcher(None, name.lower(), pname.lower())
-        if m.quick_ratio() < 0.75 or m.ratio() < 0.75:  # quick_ratio gates the slow call
+        if m.quick_ratio() < min_ratio or m.ratio() < min_ratio:  # quick_ratio gates the slow call
             continue
         e = out.setdefault(number, {"set_code": number,
                                     "set_name": prod.get("group", ""), "rarities": []})
@@ -121,6 +121,37 @@ def tcgp_candidates(name, read_code):
             e["_score"], e["card_name"] = m.ratio(), pname
     return [dict({k: v for k, v in e.items() if k != "_score"},
                  rarities=sorted(e["rarities"])) for _, e in sorted(out.items())]
+
+
+def resolve_candidates(name, code, snippet=None):
+    """The full lookup chain, shared by scan and refresh: ygoprodeck first,
+    then the TCGPlayer catalog — as a REPLACEMENT when the read code matches
+    none of ygoprodeck's printings, and as a MERGE when there was no code at
+    all, because ygoprodeck's per-card set lists lag (Dododo Warrior's omits
+    the Duelist's Advance reprint entirely). The merge threshold is 0.9:
+    tight enough to keep 'Dark Magician Girl' out of Dark Magician's list,
+    loose enough to survive TCGPlayer's own typos ('Dodododo Warrior')."""
+    import scan_cards
+
+    try:
+        cname, cands = scan_cards.db_lookup(name, code, snippet)
+    except Exception:
+        cname, cands = name, []
+    try:
+        if not cands or (code and not any(
+                scan_cards.code_matches(code, k["set_code"]) for k in cands)):
+            extra = tcgp_candidates(cname, code or "")
+            if extra:
+                if not cands and extra[0].get("card_name"):
+                    cname = extra[0]["card_name"]  # trust the catalog's spelling
+                cands = extra
+        elif not code:
+            known = {k["set_code"] for k in cands}
+            cands = cands + [k for k in tcgp_candidates(cname, "", min_ratio=0.9)
+                             if k["set_code"] not in known]
+    except Exception:
+        pass  # a catalog hiccup must not lose the ygoprodeck result
+    return cname, cands
 
 
 def build_options(cards, progress=None):
@@ -357,7 +388,6 @@ def refresh_workbook(path, timestamp="", progress=None):
     validations into an extension openpyxl drops on load, so without the
     rebuild a re-priced workbook would come back with no dropdowns at all.
     Returns the number of printings re-priced."""
-    import scan_cards
     from openpyxl import load_workbook
     from openpyxl.styles import PatternFill
     from openpyxl.worksheet.datavalidation import DataValidation
@@ -397,19 +427,7 @@ def refresh_workbook(path, timestamp="", progress=None):
     for r, name, printing in to_fix:
         m = SET_CODE_RE.search(str(printing or ""))
         code = m.group(0).upper() if m else None
-        try:
-            cname, cands = scan_cards.db_lookup(name, code)
-        except Exception:
-            cname, cands = name, []
-        ygo_blank = not cands
-        if not cands or (code and not any(
-                scan_cards.code_matches(code, k["set_code"]) for k in cands)):
-            try:
-                cands = tcgp_candidates(cname, code or "") or cands
-                if ygo_blank and cands and cands[0].get("card_name"):
-                    cname = cands[0]["card_name"]
-            except Exception:
-                pass
+        cname, cands = resolve_candidates(name, code)
         fixed.append({"row": r, "typed": str(printing or ""), "name": cname,
                       "sets": cands, "set_code": "", "rarity": "", "guess": ""})
     if fixed:
@@ -487,6 +505,29 @@ def selftest():
                           "card_name": "Stare of the Snake Hair"}], cands
         assert tcgp_candidates("Stare of the Snake-Hair", "SBLS-EN026") == []  # code excludes
     finally:
+        _IDX = None
+
+    # merge mode: no code read + ygoprodeck list incomplete → TCGPlayer
+    # printings union in (surviving TCGPlayer's own typos), near-name
+    # neighbours stay out
+    import scan_cards
+    real_db = scan_cards.db_lookup
+    scan_cards.db_lookup = lambda name, code, snippet=None: (
+        name, [{"set_code": "SP14-EN018", "set_name": "Star Pack 2014",
+                "rarities": ["Common"]}])
+    _IDX = ({("DUAD-EN004", "ultra rare"):
+             {"productId": 1, "url": "u", "name": "Dodododo Warrior",  # typo is TCGPlayer's
+              "group": "Duelist's Advance"},
+             ("MAGI-EN001", "common"):
+             {"productId": 2, "url": "u", "name": "Dododo Warrior Girl",
+              "group": "G"}}, {})
+    try:
+        _, cands = resolve_candidates("Dododo Warrior", None)
+        codes = {c["set_code"] for c in cands}
+        assert "SP14-EN018" in codes and "DUAD-EN004" in codes, codes
+        assert "MAGI-EN001" not in codes, codes  # 'Girl' variant excluded at 0.9
+    finally:
+        scan_cards.db_lookup = real_db
         _IDX = None
 
     def opt(label, nm_price, pid=0):
