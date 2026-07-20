@@ -348,10 +348,10 @@ class App:
     def _scan_worker(self, key):
         # done() must run no matter what dies in here — a stray exception
         # otherwise kills the thread silently and the GUI hangs on "Scanning…"
-        import anthropic
-        client = anthropic.Anthropic(api_key=key)
         import time
         try:
+            import anthropic
+            client = anthropic.Anthropic(api_key=key)
             for i, path in enumerate(self.photos, 1):
                 name = Path(path).name
                 self.root.after(0, self.phase,
@@ -404,6 +404,11 @@ class App:
                         resolve_set(card, cands[0])
                     self.root.after(0, self.add_card, card)
                 log(f"{name}: lookups {time.time() - t0:.0f}s")
+        except Exception as e:
+            import traceback
+            log("scan worker died:\n" + traceback.format_exc())
+            self.root.after(0, messagebox.showerror, "Scan failed",
+                            f"{type(e).__name__}: {e}\n\nDetails in {LOG}")
         finally:
             self.root.after(0, self.done)
 
@@ -595,6 +600,16 @@ if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1 and sys.argv[1] == "--selftest":
         selftest()
+        sys.exit()
+    if len(sys.argv) > 1 and sys.argv[1] == "--check":
+        # frozen-bundle verification: prove the exe carries its dependencies
+        for mod in ("anthropic", "openpyxl", "PIL", "requests", "ygo_tcgplayer_pricer"):
+            try:
+                __import__(mod)
+                log(f"check: {mod} OK")
+            except Exception as e:
+                log(f"check: {mod} FAILED: {e}")
+        log("check: done")
         sys.exit()
     claim_taskbar_identity()
     load_fonts()
