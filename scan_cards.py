@@ -73,10 +73,27 @@ PROMPT = (
 MEDIA = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
 
 
+def _prep_image(path):
+    """Downscale to the API's effective max (2576px long edge) and re-encode —
+    a 12MP phone photo uploads ~5-10x faster with no accuracy loss, and
+    exif_transpose fixes sideways phone shots the model would misread."""
+    try:
+        import io
+        from PIL import Image, ImageOps
+    except ImportError:
+        with open(path, "rb") as f:
+            return f.read(), MEDIA.get(path.rsplit(".", 1)[-1].lower(), "image/jpeg")
+    im = ImageOps.exif_transpose(Image.open(path))
+    if max(im.size) > 2576:
+        im.thumbnail((2576, 2576), Image.LANCZOS)
+    buf = io.BytesIO()
+    im.convert("RGB").save(buf, "JPEG", quality=88)
+    return buf.getvalue(), "image/jpeg"
+
+
 def read_photo(client, path):
-    with open(path, "rb") as f:
-        data = base64.standard_b64encode(f.read()).decode()
-    media = MEDIA.get(path.rsplit(".", 1)[-1].lower(), "image/jpeg")
+    raw, media = _prep_image(path)
+    data = base64.standard_b64encode(raw).decode()
     resp = client.messages.create(
         model=MODEL,
         max_tokens=16000,

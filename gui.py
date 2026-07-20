@@ -25,6 +25,17 @@ FONTS = Path(__file__).parent / "fonts"
 ICON = Path(__file__).parent / "assets" / "brand" / "app.ico"
 APP_ID = "metastack.cardscanner.1"
 CONFIG = Path(os.environ.get("APPDATA", Path.home())) / "metastack card scanner" / "config.json"
+LOG = CONFIG.parent / "scan.log"
+
+
+def log(msg):
+    import datetime
+    try:
+        CONFIG.parent.mkdir(parents=True, exist_ok=True)
+        with open(LOG, "a", encoding="utf-8") as f:
+            f.write(f"{datetime.datetime.now():%H:%M:%S} {msg}\n")
+    except OSError:
+        pass
 
 
 def load_key():
@@ -272,6 +283,19 @@ class App:
     def say(self, msg):
         self.status.config(text=msg)
 
+    # a visible heartbeat: the phase text plus a ticking elapsed counter, so
+    # a slow network call never looks like a dead app
+    def phase(self, text):
+        import time
+        self._phase, self._phase_t0 = text, time.time()
+
+    def _tick(self):
+        import time
+        if self.scanning:
+            if getattr(self, "_phase", None):
+                self.say(f"{self._phase} — {int(time.time() - self._phase_t0)}s")
+            self.root.after(1000, self._tick)
+
     # --- flow ----------------------------------------------------------------
 
     def browse(self):
@@ -314,6 +338,8 @@ class App:
         self.scanning = True
         self.cards = []
         self._page_sigs = {}
+        self.phase("Starting scan")
+        self._tick()
         self.build_rows()
         self.export_act.enable(False)
         self.scan_btn.config(bg=HAIRLINE, fg=FAINT, cursor="arrow", text="Scanning…")
@@ -324,18 +350,21 @@ class App:
         # otherwise kills the thread silently and the GUI hangs on "Scanning…"
         import anthropic
         client = anthropic.Anthropic(api_key=key)
+        import time
         try:
             for i, path in enumerate(self.photos, 1):
                 name = Path(path).name
-                self.root.after(0, self.say,
-                                f"Reading {name} ({i} of {len(self.photos)}) — "
-                                "can take a minute per page…")
+                self.root.after(0, self.phase,
+                                f"Reading {name} ({i} of {len(self.photos)})")
+                t0 = time.time()
                 try:
                     found = scan_cards.read_photo(client, path)
                 except Exception as e:
+                    log(f"{name}: vision FAILED after {time.time() - t0:.0f}s: {e}")
                     self.root.after(0, messagebox.showerror, "Scan failed",
                                     f"{name}:\n{e}")
                     continue
+                log(f"{name}: vision {time.time() - t0:.0f}s, {len(found)} cards")
                 sig = tuple((c["name"], c["set_code"]) for c in found)
                 if found and sig in self._page_sigs:
                     if not self._ask(
@@ -344,7 +373,10 @@ class App:
                             f"{self._page_sigs[sig]}.\n\nInclude it anyway?"):
                         continue
                 self._page_sigs[sig] = name
+                t0 = time.time()
                 for c in found:
+                    self.root.after(0, self.phase,
+                                    f"Looking up {c['name']} ({i} of {len(self.photos)})")
                     try:
                         cname, cands = scan_cards.db_lookup(
                             c["name"], c["set_code"], c.get("text_snippet"))
@@ -358,12 +390,12 @@ class App:
                         # failing that the name, against the TCGPlayer catalog
                         try:
                             import buylist
-                            self.root.after(0, self.say,
-                                            "Checking the TCGPlayer catalog…")
+                            self.root.after(0, self.phase,
+                                            f"Checking the TCGPlayer catalog for {c['name']}")
                             cands = buylist.tcgp_candidates(
                                 cname, c["set_code"] or "") or cands
-                        except Exception:
-                            pass  # a catalog hiccup must not kill the scan
+                        except Exception as e:
+                            log(f"  catalog fallback failed for {c['name']}: {e}")
                     card = {"photo": name, "name": cname,
                             "read_code": c["set_code"] or "",
                             "sets": cands, "guess": c["rarity_guess"] or "",
@@ -371,6 +403,7 @@ class App:
                     if len(cands) == 1:
                         resolve_set(card, cands[0])
                     self.root.after(0, self.add_card, card)
+                log(f"{name}: lookups {time.time() - t0:.0f}s")
         finally:
             self.root.after(0, self.done)
 
@@ -383,8 +416,8 @@ class App:
             done.set()
 
         self.root.after(0, ask)
-        done.wait()
-        return result["ok"]
+        done.wait(timeout=300)  # if the dialog somehow never resolves, keep the page
+        return result.get("ok", True)
 
     def add_card(self, card):
         # no auto-merging: identical vision reads can still be two different
@@ -398,6 +431,7 @@ class App:
 
     def done(self):
         self.scanning = False
+        self._phase = None
         self.scan_btn.config(bg=ACCENT, fg=ON_ACCENT, cursor="hand2",
                              text=f"Scan {len(self.photos)} photo{'s' if len(self.photos) != 1 else ''}")
         self.export_act.enable(bool(self.cards))
