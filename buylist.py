@@ -89,10 +89,13 @@ def tcgp_candidates(name, read_code):
     gbase, _ = _global_index()
     out = {}
     for (number, rarity), prod in gbase.items():
-        if not scan_cards.code_matches(read_code, number):
+        # an empty read_code matches every number — name-only mode, for cards
+        # ygoprodeck knows but has no printings for (brand-new sets)
+        if read_code and not scan_cards.code_matches(read_code, number):
             continue
         pname = prod.get("name", "").split(" (")[0]  # strip "(Extended Art)" etc.
-        if difflib.SequenceMatcher(None, name.lower(), pname.lower()).ratio() < 0.75:
+        m = difflib.SequenceMatcher(None, name.lower(), pname.lower())
+        if m.quick_ratio() < 0.75 or m.ratio() < 0.75:  # quick_ratio gates the slow call
             continue
         e = out.setdefault(number, {"set_code": number,
                                     "set_name": prod.get("group", ""), "rarities": []})
@@ -291,6 +294,19 @@ def selftest():
     import os
     import tempfile
     from openpyxl import load_workbook
+
+    global _IDX
+    _IDX = ({("MZMU-EN003", "ultra rare"):
+             {"productId": 1, "url": "u", "name": "Stare of the Snake Hair", "group": "Set A"},
+             ("SBLS-EN026", "common"):
+             {"productId": 2, "url": "u", "name": "The Snake Hair", "group": "Set B"}}, {})
+    try:
+        cands = tcgp_candidates("Stare of the Snake-Hair", "")   # name-only mode
+        assert cands == [{"set_code": "MZMU-EN003", "set_name": "Set A",
+                          "rarities": ["Ultra Rare"]}], cands
+        assert tcgp_candidates("Stare of the Snake-Hair", "SBLS-EN026") == []  # code excludes
+    finally:
+        _IDX = None
 
     def opt(label, nm_price, pid=0):
         return {"label": label, "set_name": "25th Anniversary Rarity Collection",
