@@ -115,7 +115,12 @@ def tcgp_candidates(name, read_code):
         pretty = string.capwords(rarity)  # not .title(): "Collector's", not "Collector'S"
         if pretty not in e["rarities"]:
             e["rarities"].append(pretty)
-    return [dict(e, rarities=sorted(e["rarities"])) for _, e in sorted(out.items())]
+        # carry the best-matching product name so a misread card name can be
+        # corrected from the TCGPlayer catalog when ygoprodeck drew a blank
+        if m.ratio() > e.get("_score", 0):
+            e["_score"], e["card_name"] = m.ratio(), pname
+    return [dict({k: v for k, v in e.items() if k != "_score"},
+                 rarities=sorted(e["rarities"])) for _, e in sorted(out.items())]
 
 
 def build_options(cards, progress=None):
@@ -372,7 +377,8 @@ def selftest():
     try:
         cands = tcgp_candidates("Stare of the Snake-Hair", "")   # name-only mode
         assert cands == [{"set_code": "MZMU-EN003", "set_name": "Set A",
-                          "rarities": ["Ultra Rare"]}], cands
+                          "rarities": ["Ultra Rare"],
+                          "card_name": "Stare of the Snake Hair"}], cands
         assert tcgp_candidates("Stare of the Snake-Hair", "SBLS-EN026") == []  # code excludes
     finally:
         _IDX = None

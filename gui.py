@@ -382,6 +382,7 @@ class App:
                             c["name"], c["set_code"], c.get("text_snippet"))
                     except Exception:
                         cname, cands = c["name"], []
+                    ygo_blank = not cands
                     if not cands or (c["set_code"] and not any(
                             scan_cards.code_matches(c["set_code"], k["set_code"])
                             for k in cands)):
@@ -394,6 +395,8 @@ class App:
                                             f"Checking the TCGPlayer catalog for {c['name']}")
                             cands = buylist.tcgp_candidates(
                                 cname, c["set_code"] or "") or cands
+                            if ygo_blank and cands and cands[0].get("card_name"):
+                                cname = cands[0]["card_name"]  # trust the catalog's spelling
                         except Exception as e:
                             log(f"  catalog fallback failed for {c['name']}: {e}")
                     card = {"photo": name, "name": cname,
