@@ -8,6 +8,7 @@ update by formula. No app needed on their end — just Excel.
 import json
 import os
 import re
+import string
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -111,8 +112,9 @@ def tcgp_candidates(name, read_code):
             continue
         e = out.setdefault(number, {"set_code": number,
                                     "set_name": prod.get("group", ""), "rarities": []})
-        if rarity.title() not in e["rarities"]:
-            e["rarities"].append(rarity.title())
+        pretty = string.capwords(rarity)  # not .title(): "Collector's", not "Collector'S"
+        if pretty not in e["rarities"]:
+            e["rarities"].append(pretty)
     return [dict(e, rarities=sorted(e["rarities"])) for _, e in sorted(out.items())]
 
 
@@ -163,6 +165,14 @@ def build_options(cards, progress=None):
 
 HEADERS = ["Card Name", "Printing (choose)", "Set", "Condition", "Qty",
            "Price/Unit", "Price", "Verified", "Link/Proof", "Photo"]
+
+# The $5-per-thousand bulk tier: paper rarities plus the bulk-binder foil
+# patterns. Every other rarity of a sub-pricepoint card lands at $30/1,000.
+# Cards at/above the pricepoint never touch this list.
+BULK_CR = ["Common", "Rare", "Short Print", "Super Short Print",
+           "Normal Parallel Rare", "Duel Terminal Normal Parallel Rare",
+           "Duel Terminal Rare Parallel Rare", "Duel Terminal Technology Common",
+           "Starfoil Rare", "Shatterfoil Rare", "Mosaic Rare", "Parallel Rare"]
 TINT = "F6ECE4"  # house accent tint — marks rows still needing a choice
 
 
@@ -235,13 +245,11 @@ def write_workbook(path, cards, timestamp=""):
             ws.cell(r, 8).value = f'=IFERROR(IF({verif_ix}="","",{verif_ix}),"")'
             ws.cell(r, 9).value = f'=IFERROR(IF({url_vl}="","",HYPERLINK({url_vl})),"")'
             # hidden class column for the bulk split: rarity is the text after
-            # the "·" in the chosen printing. ponytail: exactly Common/Rare
-            # count as bulk commons-and-rares; Short Prints etc. land in the
-            # $30 tier — flip them here if that's ever wrong.
+            # the "·" in the chosen printing, matched against BULK_CR
             rar = f'TRIM(MID($B{r},FIND("·",$B{r})+1,99))'
+            tier = "{" + ",".join(f'"{x}"' for x in BULK_CR) + "}"
             ws.cell(r, 11).value = (
-                f'=IF($B{r}="","",IF(OR(EXACT({rar},"Common"),'
-                f'EXACT({rar},"Rare")),"cr","foil"))')
+                f'=IF($B{r}="","",IF(ISNUMBER(MATCH({rar},{tier},0)),"cr","foil"))')
 
             labels = [o["label"] for o in c["options"]]
             pre = f"{c['set_code']} · {c['rarity']}" if c["set_code"] and c["rarity"] else None
@@ -426,7 +434,8 @@ def selftest():
         assert wb2["Cards"]["A7"].value == "Total"
         assert wb2["Cards"]["G7"].value == "=SUM(G3:G5)", wb2["Cards"]["G7"].value
         # offer block: editable inputs, class-split bulk, discounted remainder
-        assert 'EXACT(TRIM(MID($B3' in wb2["Cards"]["K3"].value
+        assert 'MATCH(TRIM(MID($B3' in wb2["Cards"]["K3"].value
+        assert '"Starfoil Rare"' in wb2["Cards"]["K3"].value
         assert wb2["Cards"]["F9"].value == 1.0                    # pricepoint input
         assert wb2["Cards"]["F10"].value == 0.65                  # rate input
         assert '"cr"' in wb2["Cards"]["E11"].value
