@@ -42,10 +42,12 @@ SCHEMA = {
                     },
                     "text_snippet": {
                         "type": ["string", "null"],
-                        "description": "The first ~12 words of the card's effect or flavor "
-                                       "text, exactly as printed. The text box is matte and "
-                                       "often more legible than the foil name — read it "
-                                       "carefully. Null only if fully unreadable.",
+                        "description": "Usually null. ONLY when the card name is partially "
+                                       "obscured or you are not fully confident in your "
+                                       "reading of it: give the first ~12 words of the "
+                                       "effect/flavor text exactly as printed — the matte "
+                                       "text box is more legible than a foil name and is "
+                                       "used to verify the match.",
                     },
                 },
                 "required": ["name", "set_code", "rarity_guess", "text_snippet"],

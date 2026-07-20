@@ -234,6 +234,14 @@ def write_workbook(path, cards, timestamp=""):
             ws.cell(r, 7).number_format = "$0.00"
             ws.cell(r, 8).value = f'=IFERROR(IF({verif_ix}="","",{verif_ix}),"")'
             ws.cell(r, 9).value = f'=IFERROR(IF({url_vl}="","",HYPERLINK({url_vl})),"")'
+            # hidden class column for the bulk split: rarity is the text after
+            # the "·" in the chosen printing. ponytail: exactly Common/Rare
+            # count as bulk commons-and-rares; Short Prints etc. land in the
+            # $30 tier — flip them here if that's ever wrong.
+            rar = f'TRIM(MID($B{r},FIND("·",$B{r})+1,99))'
+            ws.cell(r, 11).value = (
+                f'=IF($B{r}="","",IF(OR(EXACT({rar},"Common"),'
+                f'EXACT({rar},"Rare")),"cr","foil"))')
 
             labels = [o["label"] for o in c["options"]]
             pre = f"{c['set_code']} · {c['rarity']}" if c["set_code"] and c["rarity"] else None
@@ -249,18 +257,59 @@ def write_workbook(path, cards, timestamp=""):
         r += 1
 
     first = 3 if timestamp else 2
+    last = r - 1
     if r > first:
         ws.cell(r + 1, 1, "Total").font = Font(bold=True)
         ws.cell(r + 1, 2).value = (
-            f'=COUNTA(B{first}:B{r - 1})&" of "&COUNTA(A{first}:A{r - 1})&" cards chosen"')
-        ws.cell(r + 1, 5).value = f"=SUM(E{first}:E{r - 1})"  # total physical cards
+            f'=COUNTA(B{first}:B{last})&" of "&COUNTA(A{first}:A{last})&" cards chosen"')
+        ws.cell(r + 1, 5).value = f"=SUM(E{first}:E{last})"  # total physical cards
         total = ws.cell(r + 1, 7)
-        total.value = f"=SUM(G{first}:G{r - 1})"
+        total.value = f"=SUM(G{first}:G{last})"
         total.number_format = "$0.00"
         total.font = Font(bold=True)
 
+        # --- the offer: bulk under a pricepoint, a percentage above it ------
+        tint = PatternFill("solid", fgColor=TINT)
+        pp, rt = r + 3, r + 4
+        num = f"ISNUMBER(F{first}:F{last})"
+        under = f"{num}*(F{first}:F{last}<$F${pp})"
+        over = f"{num}*(F{first}:F{last}>=$F${pp})"
+        cls = f"$K${first}:$K${last}"
+        qty, line = f"E{first}:E{last}", f"G{first}:G{last}"
+
+        def label(row, text, bold=False):
+            cell = ws.cell(row, 1, text)
+            if bold:
+                cell.font = Font(bold=True)
+
+        label(pp, "Bulk pricepoint (cards under this are bulk)")
+        c = ws.cell(pp, 6)
+        c.value, c.number_format, c.fill = 1.0, "$0.00", tint
+        label(rt, "Offer rate for cards at/above the pricepoint")
+        c = ws.cell(rt, 6)
+        c.value, c.number_format, c.fill = 0.65, "0%", tint
+
+        rows = [
+            (r + 5, "Bulk commons & rares — $5 per 1,000",
+             f'=SUMPRODUCT({under}*({cls}="cr"),{qty})', f"=E{r + 5}*5/1000"),
+            (r + 6, "Bulk foils & others — $30 per 1,000",
+             f'=SUMPRODUCT({under}*({cls}="foil"),{qty})', f"=E{r + 6}*30/1000"),
+            (r + 7, "Cards at/above the pricepoint (market value)",
+             f"=SUMPRODUCT({over},{qty})", f"=SUMPRODUCT({over},{line})"),
+        ]
+        for row, text, qf, gf in rows:
+            label(row, text)
+            ws.cell(row, 5).value = qf
+            g = ws.cell(row, 7)
+            g.value, g.number_format = gf, "$0.00"
+        label(r + 8, "OFFER TOTAL", bold=True)
+        g = ws.cell(r + 8, 7)
+        g.value = f"=G{r + 5}+G{r + 6}+G{r + 7}*$F${rt}"
+        g.number_format, g.font = "$0.00", Font(bold=True)
+
     for col, width in zip("ABCDEFGHIJ", (32, 34, 34, 13, 5, 10, 10, 9, 40, 16)):
         ws.column_dimensions[col].width = width
+    ws.column_dimensions["K"].hidden = True
     wb.save(path)
 
 
@@ -376,6 +425,16 @@ def selftest():
         assert "2026-08-01" in wb2["Cards"]["A2"].value
         assert wb2["Cards"]["A7"].value == "Total"
         assert wb2["Cards"]["G7"].value == "=SUM(G3:G5)", wb2["Cards"]["G7"].value
+        # offer block: editable inputs, class-split bulk, discounted remainder
+        assert 'EXACT(TRIM(MID($B3' in wb2["Cards"]["K3"].value
+        assert wb2["Cards"]["F9"].value == 1.0                    # pricepoint input
+        assert wb2["Cards"]["F10"].value == 0.65                  # rate input
+        assert '"cr"' in wb2["Cards"]["E11"].value
+        assert wb2["Cards"]["G11"].value == "=E11*5/1000"
+        assert wb2["Cards"]["G12"].value == "=E12*30/1000"
+        assert wb2["Cards"]["A14"].value == "OFFER TOTAL"
+        assert wb2["Cards"]["G14"].value == "=G11+G12+G13*$F$10"
+        assert wb2["Cards"].column_dimensions["K"].hidden
     print("selftest OK")
 
 
