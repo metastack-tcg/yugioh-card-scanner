@@ -181,6 +181,49 @@ BULK_CR = ["Common", "Rare", "Short Print", "Super Short Print",
 TINT = "F6ECE4"  # house accent tint — marks rows still needing a choice
 
 
+def _option_row(o):
+    """One Options-sheet row for an option dict from build_options."""
+    def vtext(cond):
+        if o["prices"][cond] is None:
+            return ""
+        return "yes" if o["verified"][cond] else "no"
+    return ([o["label"], o["set_name"], o["url"] or ""]
+            + [o["prices"][cond] for cond in CONDITIONS]
+            + [vtext(cond) for cond in CONDITIONS])
+
+
+def _wire_row(ws, r, lo, hi):
+    """Formulas + printing dropdown for a Cards row whose options occupy
+    Options rows lo..hi. Shared by export and refresh so they can't drift.
+    The IF(...="","",...) wraps exist because INDEX/VLOOKUP render an empty
+    cell as 0, and a missing listing must read as blank, not $0.00."""
+    from openpyxl.worksheet.datavalidation import DataValidation
+
+    labels = f"Options!$A${lo}:$A${hi}"
+    row_m = f"MATCH($B{r},{labels},0)"
+    col_m = f"MATCH($D{r},Options!$D$1:$H$1,0)"
+    price_ix = f"INDEX(Options!$D${lo}:$H${hi},{row_m},{col_m})"
+    verif_ix = f"INDEX(Options!$I${lo}:$M${hi},{row_m},{col_m})"
+    url_vl = f"VLOOKUP($B{r},Options!$A${lo}:$C${hi},3,FALSE)"
+    ws.cell(r, 3).value = (f'=IFERROR(VLOOKUP($B{r},Options!$A${lo}:$B${hi},2,FALSE),"")')
+    ws.cell(r, 6).value = f'=IFERROR(IF({price_ix}="","",{price_ix}),"")'
+    ws.cell(r, 6).number_format = "$0.00"
+    ws.cell(r, 7).value = f'=IFERROR($E{r}*$F{r},"")'
+    ws.cell(r, 7).number_format = "$0.00"
+    ws.cell(r, 8).value = f'=IFERROR(IF({verif_ix}="","",{verif_ix}),"")'
+    ws.cell(r, 9).value = f'=IFERROR(IF({url_vl}="","",HYPERLINK({url_vl})),"")'
+    # hidden class column for the bulk split: rarity is the text after the
+    # "·" in the chosen printing, matched against BULK_CR
+    rar = f'TRIM(MID($B{r},FIND("·",$B{r})+1,99))'
+    tier = "{" + ",".join(f'"{x}"' for x in BULK_CR) + "}"
+    ws.cell(r, 11).value = (
+        f'=IF($B{r}="","",IF(ISNUMBER(MATCH({rar},{tier},0)),"cr","foil"))')
+    dv = DataValidation(type="list", formula1=labels,
+                        allow_blank=True, showErrorMessage=True)
+    ws.add_data_validation(dv)
+    dv.add(ws.cell(r, 2).coordinate)
+
+
 def write_workbook(path, cards, timestamp=""):
     """cards must already carry ["options"] from build_options."""
     from openpyxl import Workbook
@@ -216,45 +259,15 @@ def write_workbook(path, cards, timestamp=""):
         ws.cell(r, 1, c["name"])
         ws.cell(r, 5, c.get("qty", 1))
         ws.cell(r, 10, c["photo"])
+        ws.cell(r, 12, c["name"])  # hidden original name — edit detection on refresh
         if c["options"]:
             lo, hi = orow, orow + len(c["options"]) - 1
             for o in c["options"]:
-                def vtext(cond):
-                    if o["prices"][cond] is None:
-                        return ""
-                    return "yes" if o["verified"][cond] else "no"
-                opts.append([o["label"], o["set_name"], o["url"] or ""]
-                            + [o["prices"][cond] for cond in CONDITIONS]
-                            + [vtext(cond) for cond in CONDITIONS])
+                opts.append(_option_row(o))
             orow = hi + 1
-            labels = f"Options!$A${lo}:$A${hi}"
-            conds = "Options!$D$1:$H$1"
-            row_m = f"MATCH($B{r},{labels},0)"
-            col_m = f"MATCH($D{r},{conds},0)"
-            dv = DataValidation(type="list", formula1=labels,
-                                allow_blank=True, showErrorMessage=True)
-            ws.add_data_validation(dv)
-            dv.add(ws.cell(r, 2).coordinate)
+            _wire_row(ws, r, lo, hi)
             cond_dv.add(ws.cell(r, 4).coordinate)
-            # IF(...="","",...) wraps: INDEX/VLOOKUP render an empty cell as 0,
-            # and a missing listing must read as blank, not "$0.00"
-            price_ix = f"INDEX(Options!$D${lo}:$H${hi},{row_m},{col_m})"
-            verif_ix = f"INDEX(Options!$I${lo}:$M${hi},{row_m},{col_m})"
-            url_vl = f"VLOOKUP($B{r},Options!$A${lo}:$C${hi},3,FALSE)"
-            ws.cell(r, 3).value = (f'=IFERROR(VLOOKUP($B{r},Options!$A${lo}:$B${hi},2,FALSE),"")')
             ws.cell(r, 4).value = DEFAULT_CONDITION
-            ws.cell(r, 6).value = f'=IFERROR(IF({price_ix}="","",{price_ix}),"")'
-            ws.cell(r, 6).number_format = "$0.00"
-            ws.cell(r, 7).value = f'=IFERROR($E{r}*$F{r},"")'
-            ws.cell(r, 7).number_format = "$0.00"
-            ws.cell(r, 8).value = f'=IFERROR(IF({verif_ix}="","",{verif_ix}),"")'
-            ws.cell(r, 9).value = f'=IFERROR(IF({url_vl}="","",HYPERLINK({url_vl})),"")'
-            # hidden class column for the bulk split: rarity is the text after
-            # the "·" in the chosen printing, matched against BULK_CR
-            rar = f'TRIM(MID($B{r},FIND("·",$B{r})+1,99))'
-            tier = "{" + ",".join(f'"{x}"' for x in BULK_CR) + "}"
-            ws.cell(r, 11).value = (
-                f'=IF($B{r}="","",IF(ISNUMBER(MATCH({rar},{tier},0)),"cr","foil"))')
 
             labels = [o["label"] for o in c["options"]]
             pre = f"{c['set_code']} · {c['rarity']}" if c["set_code"] and c["rarity"] else None
@@ -323,31 +336,125 @@ def write_workbook(path, cards, timestamp=""):
     for col, width in zip("ABCDEFGHIJ", (32, 34, 34, 13, 5, 10, 10, 9, 40, 16)):
         ws.column_dimensions[col].width = width
     ws.column_dimensions["K"].hidden = True
+    ws.column_dimensions["L"].hidden = True
     wb.save(path)
 
 
 PRODUCT_URL_RE = re.compile(r"/product/(\d+)")
+SET_CODE_RE = re.compile(r"\b[A-Z0-9]{2,5}-[A-Z0-9?]{2,8}\b", re.I)
+OPT_RANGE_RE = re.compile(r"Options!\$A\$(\d+):\$B\$(\d+)")
 
 
 def refresh_workbook(path, timestamp="", progress=None):
-    """Re-price a workbook the seller sent back. Only the hidden Options
-    sheet's price/verified cells and the note row are touched — the seller's
-    dropdown choices, added columns, and everything else stay as-is. The
-    Cards-sheet formulas pick up the new numbers when the file next opens.
+    """Re-price a workbook the seller sent back — and honor their corrections.
+
+    A row is RE-RESOLVED (fresh candidates, new dropdown, new prices) when the
+    seller edited the card name (vs the hidden original in column L), typed a
+    printing that isn't one of the row's options, or the row never had options.
+    Everything else keeps its choices and simply gets fresh prices.
+
+    All dropdowns are rebuilt from scratch: Excel re-saves cross-sheet
+    validations into an extension openpyxl drops on load, so without the
+    rebuild a re-priced workbook would come back with no dropdowns at all.
     Returns the number of printings re-priced."""
+    import scan_cards
     from openpyxl import load_workbook
+    from openpyxl.styles import PatternFill
+    from openpyxl.worksheet.datavalidation import DataValidation
 
     wb = load_workbook(path)
-    opts = wb["Options"]
+    ws, opts = wb["Cards"], wb["Options"]
+    old_opts_max = opts.max_row
+
+    # data rows end at the Total row; ranges come from each row's Set formula
+    data_rows, ranges = [], {}
+    for r in range(2, ws.max_row + 1):
+        a = ws.cell(r, 1).value
+        if a == "Total":
+            break
+        if not a or str(a).startswith("Prices:"):
+            continue
+        data_rows.append(r)
+        m = OPT_RANGE_RE.search(str(ws.cell(r, 3).value or ""))
+        if m:
+            ranges[r] = (int(m.group(1)), int(m.group(2)))
+
+    # which rows did the seller correct (or did the original export fail on)?
+    to_fix = []
+    for r in data_rows:
+        name = str(ws.cell(r, 1).value)
+        printing = ws.cell(r, 2).value
+        orig = ws.cell(r, 12).value
+        labels = ([opts.cell(i, 1).value
+                   for i in range(ranges[r][0], ranges[r][1] + 1)]
+                  if r in ranges else [])
+        if (orig and name != orig) or (printing and printing not in labels) \
+                or not labels:
+            to_fix.append((r, name, printing))
+
+    # re-resolve corrected rows: same lookup chain as a fresh scan
+    fixed = []
+    for r, name, printing in to_fix:
+        m = SET_CODE_RE.search(str(printing or ""))
+        code = m.group(0).upper() if m else None
+        try:
+            cname, cands = scan_cards.db_lookup(name, code)
+        except Exception:
+            cname, cands = name, []
+        ygo_blank = not cands
+        if not cands or (code and not any(
+                scan_cards.code_matches(code, k["set_code"]) for k in cands)):
+            try:
+                cands = tcgp_candidates(cname, code or "") or cands
+                if ygo_blank and cands and cands[0].get("card_name"):
+                    cname = cands[0]["card_name"]
+            except Exception:
+                pass
+        fixed.append({"row": r, "typed": str(printing or ""), "name": cname,
+                      "sets": cands, "set_code": "", "rarity": "", "guess": ""})
+    if fixed:
+        build_options(fixed, progress=None)  # prices the new options
+        for card in fixed:
+            r = card["row"]
+            if not card["options"]:
+                continue
+            lo = opts.max_row + 1
+            for o in card["options"]:
+                opts.append(_option_row(o))
+            hi = opts.max_row
+            ranges[r] = (lo, hi)
+            ws.cell(r, 1).value = card["name"]
+            ws.cell(r, 12).value = card["name"]
+            labels = [o["label"] for o in card["options"]]
+            typed = card["typed"].strip().lower()
+            pick = next((l for l in labels if l.lower() == typed), None)
+            if pick is None and len(labels) == 1:
+                pick = labels[0]
+            ws.cell(r, 2).value = pick
+            if pick is None:
+                ws.cell(r, 2).fill = PatternFill("solid", fgColor=TINT)
+            if not ws.cell(r, 4).value:
+                ws.cell(r, 4).value = DEFAULT_CONDITION
+
+    # rebuild every dropdown + formula set (Excel's re-save strips them)
+    ws.data_validations.dataValidation = []
+    cond_dv = DataValidation(
+        type="list", formula1='"' + ",".join(CONDITIONS) + '"',
+        allow_blank=False, showErrorMessage=True)
+    ws.add_data_validation(cond_dv)
+    for r in data_rows:
+        if r in ranges:
+            _wire_row(ws, r, *ranges[r])
+            cond_dv.add(ws.cell(r, 4).coordinate)
+
+    # re-price the pre-existing option rows (new ones were priced just now)
     rows = []  # (options_row, product_id)
-    for r in range(2, opts.max_row + 1):
+    for r in range(2, old_opts_max + 1):
         m = PRODUCT_URL_RE.search(opts.cell(r, 3).value or "")
         if m:
             rows.append((r, int(m.group(1))))
-
     prices = _price_jobs({(pid, cond) for _, pid in rows for cond in CONDITIONS},
                          progress)
-
     for r, pid in rows:
         for i, cond in enumerate(CONDITIONS):
             priced = prices.get((pid, cond))
@@ -355,13 +462,12 @@ def refresh_workbook(path, timestamp="", progress=None):
             opts.cell(r, 9 + i).value = (
                 "" if priced is None else ("yes" if priced["verified"] else "no"))
 
-    ws = wb["Cards"]
     if timestamp and str(ws["A2"].value or "").startswith("Prices:"):
         ws["A2"] = ("Prices: lowest verified TCGPlayer listing in the chosen "
                     f"condition, {timestamp}. A blank price means no verified "
                     "listing right now.")
     wb.save(path)
-    return len(rows)
+    return len(rows) + sum(len(c["options"]) for c in fixed)
 
 
 def selftest():
@@ -420,22 +526,43 @@ def selftest():
         assert ws["B4"].value is None                             # unresolved left blank
         assert ws["B5"].value == "CORI-EN012 · Ultra Rare (Extended Art)"  # EA guess wins
 
-        # refresh: seller edits survive, prices change, no network (stubbed)
-        ws["B3"] = "RA01-EN021 · Ultra Rare"  # seller corrected the printing
-        ws["D3"] = "Lightly Played"           # and the condition
+        # refresh: seller edits survive, prices change, corrected/unresolved
+        # rows re-resolve — all offline (lookups and pricing stubbed)
+        import scan_cards
+        from ygo_tcgplayer_pricer import tcgplayer_catalog
+        ws["B3"] = "RA01-EN021 · Ultra Rare"  # dropdown correction (valid label)
+        ws["D3"] = "Lightly Played"           # condition correction
         wb.save(p)
-        real = tcgplayer_pricing.get_lowest_price_safe
+        real = (tcgplayer_pricing.get_lowest_price_safe, scan_cards.db_lookup,
+                tcgplayer_catalog.find_group_id)
         tcgplayer_pricing.get_lowest_price_safe = (
             lambda pid, condition=None, **kw: {"price": 9.99, "seller": "s", "verified": True})
+        # the Mystery Card row (no options) re-resolves via these stubs
+        scan_cards.db_lookup = (
+            lambda name, code, snippet=None:
+            ("Found Card", [{"set_code": "NEW1-EN001", "set_name": "New Set",
+                             "rarities": ["Rare"]}]) if name == "Mystery Card"
+            else (name, []))
+        tcgplayer_catalog.find_group_id = lambda s: None
+        _IDX = ({("NEW1-EN001", "rare"):
+                 {"productId": 9, "url": "https://www.tcgplayer.com/product/9/x",
+                  "name": "Found Card", "group": "New Set"}}, {})
         try:
             n = refresh_workbook(p, "2026-08-01")
         finally:
-            tcgplayer_pricing.get_lowest_price_safe = real
+            (tcgplayer_pricing.get_lowest_price_safe, scan_cards.db_lookup,
+             tcgplayer_catalog.find_group_id) = real
+            _IDX = None
         wb2 = load_workbook(p)
-        assert n == 3, n                                          # only rows with URLs
+        assert n == 4, n                              # 3 URL rows + 1 new option
         assert wb2["Options"]["D2"].value == 9.99                 # re-priced
         assert wb2["Cards"]["B3"].value == "RA01-EN021 · Ultra Rare"   # seller choice kept
         assert wb2["Cards"]["D3"].value == "Lightly Played"
+        assert wb2["Cards"]["A4"].value == "Found Card"           # name corrected
+        assert wb2["Cards"]["B4"].value == "NEW1-EN001 · Rare"    # new dropdown pick
+        assert "VLOOKUP" in str(wb2["Cards"]["C4"].value)         # row wired up
+        # dropdowns rebuilt: 3 printing DVs + the shared condition DV
+        assert len(wb2["Cards"].data_validations.dataValidation) == 4
         assert "2026-08-01" in wb2["Cards"]["A2"].value
         assert wb2["Cards"]["A7"].value == "Total"
         assert wb2["Cards"]["G7"].value == "=SUM(G3:G5)", wb2["Cards"]["G7"].value
