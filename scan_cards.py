@@ -152,11 +152,13 @@ def _find_card(name, snippet=None):
         return s
 
     words = name.split()
-    for i in range(1, len(words) - 1):
+    for i in range(1, len(words)):  # len(words), not -1: two-word names get a try
         data = _fetch("fname", " ".join(words[i:]))
         if data:
             best = max(data, key=score)
-            return best if score(best) >= 0.6 else None
+            # printed-text corroboration earns a looser bar; a lone name
+            # match must be close ("Final Fusion" ≠ a misread "Evil Fusion")
+            return best if score(best) >= (0.6 if snippet else 0.8) else None
     return None
 
 

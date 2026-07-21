@@ -145,7 +145,11 @@ def resolve_candidates(name, code, snippet=None):
     try:
         if not cands or (code and not any(
                 scan_cards.code_matches(code, k["set_code"]) for k in cands)):
-            extra = tcgp_candidates(cname, code or "")
+            # without a code to corroborate, demand a closer name match —
+            # 0.8 rejects "Final Fusion" for a misread "Evil Fusion" while
+            # keeping "Scatter Fusion" for "Skate Fusion" (0.84)
+            extra = tcgp_candidates(cname, code or "",
+                                    min_ratio=0.75 if code else 0.8)
             if extra:
                 if not cands and extra[0].get("card_name"):
                     # a name-only search can pull in cousins ("Instant
@@ -167,6 +171,26 @@ def resolve_candidates(name, code, snippet=None):
             cands = merged(cands)
     except Exception:
         pass  # a catalog hiccup must not lose the ygoprodeck result
+
+    # ygoprodeck ships placeholder garbage in the rarity field for brand-new
+    # sets ("New", "3", "force-SMW") — swap in the printed rarities TCGPlayer
+    # sells for that code
+    def sane(r):
+        rl = r.lower()
+        return any(w in rl for w in ("rare", "common", "print", "promo", "parallel"))
+    try:
+        if any(not sane(r) for k in cands for r in k["rarities"]):
+            gbase, gea = _global_index()
+            by_code = {}
+            for num, rar in list(gbase) + list(gea):
+                by_code.setdefault(num, set()).add(string.capwords(rar))
+            for k in cands:
+                if not all(sane(r) for r in k["rarities"]):
+                    real = sorted(by_code.get(k["set_code"], ()))
+                    k["rarities"] = (real or [r for r in k["rarities"] if sane(r)]
+                                     or k["rarities"])
+    except Exception:
+        pass
     return cname, cands
 
 
@@ -574,6 +598,19 @@ def selftest():
         cname, cands = resolve_candidates("Skate Fusion", None)
         assert cname == "Scatter Fusion", cname
         assert [c["set_code"] for c in cands] == ["POTE-EN062"], cands
+
+        # a 0.76 cousin is NOT adopted without a code (blank beats wrong)
+        cname, cands = resolve_candidates("Evil Fusion", None)
+        assert cname == "Evil Fusion" and cands == [], (cname, cands)
+
+        # placeholder rarities are replaced by TCGPlayer's printed ones
+        scan_cards.db_lookup = lambda name, code, snippet=None: (
+            "Fallen of Albaz", [{"set_code": "CH01-EN001", "set_name": "Chronicles",
+                                 "rarities": ["New"]}])
+        _IDX = ({("CH01-EN001", "ultra rare"):
+                 {"productId": 5, "url": "u", "name": "Fallen of Albaz", "group": "Chronicles"}}, {})
+        _, cands = resolve_candidates("Fallen of Albaz", "CH01-EN001")
+        assert cands[0]["rarities"] == ["Ultra Rare"], cands
     finally:
         scan_cards.db_lookup = real_db
         _IDX = None
