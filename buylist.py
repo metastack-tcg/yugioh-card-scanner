@@ -74,6 +74,36 @@ def _global_index():
     return _IDX
 
 
+def _rkey(s):
+    """Rarity comparison key: the two databases disagree on apostrophes
+    (straight vs curly "Collector's Rare"), which silently unpriced cards."""
+    return re.sub(r"[^a-z0-9]", "", s.lower())
+
+
+def _sane_rarity(r):
+    rl = r.lower()
+    return any(w in rl for w in ("rare", "common", "print", "promo", "parallel"))
+
+
+def _get_normalized(mapping, code, rarity):
+    """mapping[(code, rarity)] with two fallbacks: punctuation-insensitive
+    (straight vs curly apostrophes), then unique containment — ygoprodeck
+    says "Collector's Rare" where TCGPlayer sells "Prismatic Collector's
+    Rare" for the same printing. Containment only counts when exactly one
+    product qualifies, so "Secret Rare" never guesses among the Platinum/
+    Quarter Century/Prismatic secrets."""
+    hit = mapping.get((code, rarity.strip().lower()))
+    if hit is not None:
+        return hit
+    nk = _rkey(rarity)
+    exact = [v for (n, rr), v in mapping.items() if n == code and _rkey(rr) == nk]
+    if exact:
+        return exact[0]
+    contains = [v for (n, rr), v in mapping.items()
+                if n == code and (nk in _rkey(rr) or _rkey(rr) in nk)]
+    return contains[0] if len(contains) == 1 else None
+
+
 def _price_jobs(jobs, progress=None):
     """{(product_id, condition): priced_or_None} — concurrent, deduped by caller."""
     prices = {}
@@ -175,9 +205,7 @@ def resolve_candidates(name, code, snippet=None):
     # ygoprodeck ships placeholder garbage in the rarity field for brand-new
     # sets ("New", "3", "force-SMW") — swap in the printed rarities TCGPlayer
     # sells for that code
-    def sane(r):
-        rl = r.lower()
-        return any(w in rl for w in ("rare", "common", "print", "promo", "parallel"))
+    sane = _sane_rarity
     try:
         if any(not sane(r) for k in cands for r in k["rarities"]):
             gbase, gea = _global_index()
@@ -221,12 +249,12 @@ def build_options(cards, progress=None, status=None):
             by_rarity, ea_by_rarity, _ = (
                 tcgplayer_catalog.get_product_lookup(gid) if gid else ({}, {}, {}))
             for rarity in cand["rarities"]:
-                key = (cand["set_code"], rarity.strip().lower())
-                base = by_rarity.get(key)
-                ea_key = ea_by_rarity.get(key)
+                base = _get_normalized(by_rarity, cand["set_code"], rarity)
+                ea_key = _get_normalized(ea_by_rarity, cand["set_code"], rarity)
                 if base is None and ea_key is None:
                     gbase, gea = _global_index()
-                    base, ea_key = gbase.get(key), gea.get(key)
+                    base = _get_normalized(gbase, cand["set_code"], rarity)
+                    ea_key = _get_normalized(gea, cand["set_code"], rarity)
                 label = f"{cand['set_code']} · {rarity}"
                 if base and base.get("is_extended_art"):
                     label += " (Extended Art)"
@@ -474,8 +502,19 @@ def refresh_workbook(path, timestamp="", progress=None):
         labels = ([opts.cell(i, 1).value
                    for i in range(ranges[r][0], ranges[r][1] + 1)]
                   if r in ranges else [])
-        if (orig and name != orig) or (printing and printing not in labels) \
-                or not labels:
+        needs = ((orig and name != orig) or (printing and printing not in labels)
+                 or not labels)
+        if not needs and printing:
+            # a chosen option can still be broken: junk rarity from ygoprodeck
+            # ("· New", "· force-SMW") or a printing that never matched a
+            # TCGPlayer product (apostrophe mismatches) — both price blank
+            i = next((i for i in range(ranges[r][0], ranges[r][1] + 1)
+                      if opts.cell(i, 1).value == printing), None)
+            if i is not None:
+                rarity = str(printing).split("·", 1)[-1].strip()
+                if not _sane_rarity(rarity) or not opts.cell(i, 3).value:
+                    needs = True
+        if needs:
             to_fix.append((r, name, printing))
 
     # re-resolve corrected rows: same lookup chain as a fresh scan
@@ -614,6 +653,16 @@ def selftest():
     finally:
         scan_cards.db_lookup = real_db
         _IDX = None
+
+    # rarity-name reconciliation between the two databases
+    m = {("X-EN001", "prismatic collector's rare"): "PCR",
+         ("X-EN001", "platinum secret rare"): "PLS",
+         ("X-EN001", "quarter century secret rare"): "QCS",
+         ("X-EN001", "collector’s rare"): "CURLY"}
+    assert _get_normalized(m, "X-EN001", "Collector's Rare") == "CURLY"  # apostrophe
+    del m[("X-EN001", "collector’s rare")]
+    assert _get_normalized(m, "X-EN001", "Collector's Rare") == "PCR"    # unique containment
+    assert _get_normalized(m, "X-EN001", "Secret Rare") is None          # ambiguous — no guess
 
     def opt(label, nm_price, pid=0):
         return {"label": label, "set_name": "25th Anniversary Rarity Collection",

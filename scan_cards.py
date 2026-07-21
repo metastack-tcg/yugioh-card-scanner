@@ -166,20 +166,25 @@ def db_lookup(name, set_code, snippet=None):
     """Return (canonical_name, candidates): the card's printings grouped by
     set code, narrowed by whatever part of the code was readable.
     One candidate = resolved; several = the user picks."""
+    import html
+
     card = _find_card(name, snippet)
     if not card:
         return name, []
     groups = {}
     for s in card.get("card_sets", []):
+        # ygoprodeck leaks HTML entities ("The Fallen &amp; The Virtuous")
         g = groups.setdefault(s["set_code"], {"set_code": s["set_code"],
-                                              "set_name": s["set_name"], "rarities": set()})
+                                              "set_name": html.unescape(s["set_name"]),
+                                              "rarities": set()})
         g["rarities"].add(s["set_rarity"])
     cands = [dict(g, rarities=sorted(g["rarities"])) for _, g in sorted(groups.items())]
+    cname = html.unescape(card["name"])
     if set_code:
         matched = [c for c in cands if code_matches(set_code, c["set_code"])]
         if matched:
-            return card["name"], matched
-    return card["name"], cands
+            return cname, matched
+    return cname, cands
 
 
 def selftest():
