@@ -161,10 +161,26 @@ def resolve_candidates(name, code, snippet=None):
     return cname, cands
 
 
-def build_options(cards, progress=None):
+def build_options(cards, progress=None, status=None):
     """Attach card["options"] — one entry per candidate (printing, rarity),
     priced. Options span every candidate set so the seller can still correct
     a wrong auto-resolution in Excel."""
+    say = status or (lambda t: None)
+
+    # warm the catalog concurrently first — the per-card loop below hits the
+    # lru caches. Sequential fetches left "Looking up printings" silent for
+    # minutes once merged candidate lists grew.
+    names = {cand["set_name"] for c in cards for cand in c["sets"] if cand["set_name"]}
+    say(f"Fetching {len(names)} set catalogs…")
+
+    def warm(n):
+        gid = tcgplayer_catalog.find_group_id(n)
+        if gid:
+            tcgplayer_catalog.get_product_lookup(gid)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(warm, names))
+
+    say("Matching printings…")
     for card in cards:
         card["options"] = []
         for cand in card["sets"]:

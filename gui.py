@@ -291,7 +291,7 @@ class App:
 
     def _tick(self):
         import time
-        if self.scanning:
+        if self.scanning or self.working:
             if getattr(self, "_phase", None):
                 self.say(f"{self._phase} — {int(time.time() - self._phase_t0)}s")
             self.root.after(1000, self._tick)
@@ -495,7 +495,11 @@ class App:
     # --- export ---------------------------------------------------------------
 
     def export(self):
+        log(f"export clicked: cards={len(self.cards)} scanning={self.scanning} "
+            f"working={self.working}")
         if not self.cards or self.scanning or self.working:
+            self.say("Still busy with the previous job — wait for it to finish."
+                     if (self.scanning or self.working) else "Scan some photos first.")
             return
         import datetime
         path = filedialog.asksaveasfilename(
@@ -506,24 +510,33 @@ class App:
             return
         self.export_act.enable(False)
         self.working = True
+        self.phase("Starting export")
+        self._tick()
         threading.Thread(target=self._export_worker, args=(path,), daemon=True).start()
 
     def _export_worker(self, path):
         import datetime
+        import time
         import buylist
 
         def note(t):
             self.root.after(0, self.export_act.text, t)
+            self.root.after(0, self.phase, t)
 
+        t0 = time.time()
         try:
             note("Looking up printings…")
             buylist.build_options(
-                self.cards,
+                self.cards, status=note,
                 progress=lambda d, t: note(f"Pricing… {d} of {t}"))
+            log(f"export: options+pricing {time.time() - t0:.0f}s "
+                f"({sum(len(c['options']) for c in self.cards)} options)")
             note("Writing workbook…")
             buylist.write_workbook(path, self.cards,
                                    datetime.date.today().isoformat())
         except Exception as e:
+            import traceback
+            log("export died:\n" + traceback.format_exc())
             self.root.after(0, messagebox.showerror, "Export failed", str(e))
         else:
             self.root.after(0, self._export_done, path)
@@ -538,7 +551,9 @@ class App:
             os.startfile(Path(path).parent)
 
     def refresh(self):
+        log(f"refresh clicked: scanning={self.scanning} working={self.working}")
         if self.scanning or self.working:
+            self.say("Still busy with the previous job — wait for it to finish.")
             return
         path = filedialog.askopenfilename(
             title="Re-price a buylist workbook", filetypes=[("Excel", "*.xlsx")])
@@ -546,16 +561,22 @@ class App:
             return
         self.refresh_act.enable(False)
         self.working = True
+        self.phase("Starting re-price")
+        self._tick()
         threading.Thread(target=self._refresh_worker, args=(path,), daemon=True).start()
 
     def _refresh_worker(self, path):
         import datetime
         import buylist
+
+        def note(t):
+            self.root.after(0, self.refresh_act.text, t)
+            self.root.after(0, self.phase, t)
+
         try:
             n = buylist.refresh_workbook(
                 path, datetime.date.today().isoformat(),
-                progress=lambda d, t: self.root.after(
-                    0, self.refresh_act.text, f"Re-pricing… {d} of {t}"))
+                progress=lambda d, t: note(f"Re-pricing… {d} of {t}"))
         except PermissionError:
             self.root.after(0, messagebox.showerror, "File is open",
                             "Close the workbook in Excel first, then try again.")
