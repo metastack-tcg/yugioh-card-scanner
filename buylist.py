@@ -137,6 +137,11 @@ def resolve_candidates(name, code, snippet=None):
         cname, cands = scan_cards.db_lookup(name, code, snippet)
     except Exception:
         cname, cands = name, []
+    def merged(cands):
+        known = {k["set_code"] for k in cands}
+        return cands + [k for k in tcgp_candidates(cname, "", min_ratio=0.9)
+                        if k["set_code"] not in known]
+
     try:
         if not cands or (code and not any(
                 scan_cards.code_matches(code, k["set_code"]) for k in cands)):
@@ -145,10 +150,12 @@ def resolve_candidates(name, code, snippet=None):
                 if not cands and extra[0].get("card_name"):
                     cname = extra[0]["card_name"]  # trust the catalog's spelling
                 cands = extra
+            else:
+                # the code matches nothing anywhere — a misread; treat it as
+                # absent so every known printing of the name is still on offer
+                cands = merged(cands)
         elif not code:
-            known = {k["set_code"] for k in cands}
-            cands = cands + [k for k in tcgp_candidates(cname, "", min_ratio=0.9)
-                             if k["set_code"] not in known]
+            cands = merged(cands)
     except Exception:
         pass  # a catalog hiccup must not lose the ygoprodeck result
     return cname, cands
@@ -526,6 +533,11 @@ def selftest():
         codes = {c["set_code"] for c in cands}
         assert "SP14-EN018" in codes and "DUAD-EN004" in codes, codes
         assert "MAGI-EN001" not in codes, codes  # 'Girl' variant excluded at 0.9
+
+        # a misread code that matches nothing degrades to the same name-merge
+        _, cands = resolve_candidates("Dododo Warrior", "TN19-EN001")
+        codes = {c["set_code"] for c in cands}
+        assert "DUAD-EN004" in codes and "SP14-EN018" in codes, codes
     finally:
         scan_cards.db_lookup = real_db
         _IDX = None
