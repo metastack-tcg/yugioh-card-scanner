@@ -148,7 +148,16 @@ def resolve_candidates(name, code, snippet=None):
             extra = tcgp_candidates(cname, code or "")
             if extra:
                 if not cands and extra[0].get("card_name"):
-                    cname = extra[0]["card_name"]  # trust the catalog's spelling
+                    # a name-only search can pull in cousins ("Instant
+                    # Fusion" for a misread "Skate Fusion") — keep only the
+                    # single best-matching card identity, not a mixed bag
+                    import difflib
+                    target = max(
+                        {k.get("card_name") for k in extra if k.get("card_name")},
+                        key=lambda t: difflib.SequenceMatcher(
+                            None, cname.lower(), t.lower()).ratio())
+                    extra = [k for k in extra if k.get("card_name") == target]
+                    cname = target  # trust the catalog's spelling
                 cands = extra
             else:
                 # the code matches nothing anywhere — a misread; treat it as
@@ -554,6 +563,17 @@ def selftest():
         _, cands = resolve_candidates("Dododo Warrior", "TN19-EN001")
         codes = {c["set_code"] for c in cands}
         assert "DUAD-EN004" in codes and "SP14-EN018" in codes, codes
+
+        # unknown name + name-only fallback: one card identity, not a mixed
+        # bag of similarly-named cousins
+        scan_cards.db_lookup = lambda name, code, snippet=None: (name, [])
+        _IDX = ({("POTE-EN062", "super rare"):
+                 {"productId": 3, "url": "u", "name": "Scatter Fusion", "group": "PotE"},
+                 ("CDIP-EN040", "common"):
+                 {"productId": 4, "url": "u", "name": "Instant Fusion", "group": "CDI"}}, {})
+        cname, cands = resolve_candidates("Skate Fusion", None)
+        assert cname == "Scatter Fusion", cname
+        assert [c["set_code"] for c in cands] == ["POTE-EN062"], cands
     finally:
         scan_cards.db_lookup = real_db
         _IDX = None
