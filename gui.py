@@ -358,11 +358,14 @@ class App:
                                 f"Reading {name} ({i} of {len(self.photos)})")
                 t0 = time.time()
                 try:
-                    found = scan_cards.read_photo(client, path)
+                    found = self._read_with_retry(client, path, name, i)
                 except Exception as e:
                     log(f"{name}: vision FAILED after {time.time() - t0:.0f}s: {e}")
+                    busy = "529" in str(e) or "overloaded" in str(e).lower()
                     self.root.after(0, messagebox.showerror, "Scan failed",
-                                    f"{name}:\n{e}")
+                                    f"{name}: the API is overloaded right now — this "
+                                    "page was skipped. Scan it again in a minute or two."
+                                    if busy else f"{name}:\n{e}")
                     continue
                 log(f"{name}: vision {time.time() - t0:.0f}s, {len(found)} cards")
                 sig = tuple((c["name"], c["set_code"]) for c in found)
@@ -395,6 +398,24 @@ class App:
                             f"{type(e).__name__}: {e}\n\nDetails in {LOG}")
         finally:
             self.root.after(0, self.done)
+
+    def _read_with_retry(self, client, path, name, i):
+        """529/rate-limit blips pass in seconds — wait them out before
+        giving up on a page (the SDK's own two retries come first)."""
+        import time
+        for attempt in range(3):
+            try:
+                return scan_cards.read_photo(client, path)
+            except Exception as e:
+                msg = str(e).lower()
+                if attempt < 2 and ("529" in msg or "overloaded" in msg
+                                    or "rate_limit" in msg):
+                    self.root.after(0, self.phase,
+                                    f"API busy — waiting to retry {name} ({i})")
+                    log(f"{name}: overloaded, retry {attempt + 1}")
+                    time.sleep(15 * (attempt + 1))
+                    continue
+                raise
 
     def _ask(self, title, msg):
         """askyesno from a worker thread — runs the dialog on the UI thread."""
