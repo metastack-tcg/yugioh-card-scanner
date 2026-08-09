@@ -301,7 +301,8 @@ class App:
     def browse(self):
         paths = filedialog.askopenfilenames(
             title="Binder photos",
-            filetypes=[("Photos", "*.jpg *.jpeg *.png *.webp"), ("All files", "*.*")])
+            filetypes=[("Photos", "*.jpg *.jpeg *.png *.webp *.heic *.heif"),
+                       ("All files", "*.*")])
         if not paths:
             return
         import hashlib
@@ -631,7 +632,8 @@ if __name__ == "__main__":
         sys.exit()
     if len(sys.argv) > 1 and sys.argv[1] == "--check":
         # frozen-bundle verification: prove the exe carries its dependencies
-        for mod in ("anthropic", "openpyxl", "PIL", "requests", "ygo_tcgplayer_pricer"):
+        for mod in ("anthropic", "openpyxl", "PIL", "pillow_heif", "requests",
+                    "ygo_tcgplayer_pricer"):
             try:
                 __import__(mod)
                 log(f"check: {mod} OK")

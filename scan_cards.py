@@ -80,6 +80,11 @@ def _prep_image(path):
     except ImportError:
         with open(path, "rb") as f:
             return f.read(), MEDIA.get(path.rsplit(".", 1)[-1].lower(), "image/jpeg")
+    try:
+        from pillow_heif import register_heif_opener  # iPhone HEIC photos
+        register_heif_opener()
+    except ImportError:
+        pass
     im = ImageOps.exif_transpose(Image.open(path))
     if max(im.size) > 2576:
         im.thumbnail((2576, 2576), Image.LANCZOS)
@@ -188,6 +193,19 @@ def db_lookup(name, set_code, snippet=None):
 
 
 def selftest():
+    try:  # iPhone HEIC in → JPEG out (skipped if pillow_heif absent)
+        import os
+        import tempfile
+        import pillow_heif
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.heic")
+            pillow_heif.from_pillow(Image.new("RGB", (100, 80), "red")).save(p)
+            raw, media = _prep_image(p)
+            assert media == "image/jpeg" and raw[:2] == b"\xff\xd8", media
+    except ImportError:
+        pass
+
     assert code_matches("SKE-EN0??", "SKE-EN020")
     assert code_matches("SKE-EN..?", "SKE-EN020")
     assert code_matches("SKE-EN", "SKE-EN020")          # prefix
