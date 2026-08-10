@@ -339,6 +339,61 @@ def _wire_row(ws, r, lo, hi):
     dv.add(ws.cell(r, 2).coordinate)
 
 
+def _write_summary(ws, first, last, trow, pricepoint=1.0, rate=0.65):
+    """The Total row + offer block, anchored at trow (the 'Total' row) with
+    ranges spanning first..last. Refresh re-runs this so hand-added rows
+    below the original range boundary join the pricing calculus — Excel
+    doesn't expand SUM ranges for rows appended after their end."""
+    from openpyxl.styles import Font, PatternFill
+
+    tint = PatternFill("solid", fgColor=TINT)
+    ws.cell(trow, 1, "Total").font = Font(bold=True)
+    ws.cell(trow, 2).value = (
+        f'=COUNTA(B{first}:B{last})&" of "&COUNTA(A{first}:A{last})&" cards chosen"')
+    ws.cell(trow, 5).value = f"=SUM(E{first}:E{last})"  # total physical cards
+    total = ws.cell(trow, 7)
+    total.value = f"=SUM(G{first}:G{last})"
+    total.number_format = "$0.00"
+    total.font = Font(bold=True)
+
+    pp, rt = trow + 2, trow + 3
+    num = f"ISNUMBER(F{first}:F{last})"
+    under = f"{num}*(F{first}:F{last}<$F${pp})"
+    over = f"{num}*(F{first}:F{last}>=$F${pp})"
+    cls = f"$K${first}:$K${last}"
+    qty, line = f"E{first}:E{last}", f"G{first}:G{last}"
+
+    def label(row, text, bold=False):
+        cell = ws.cell(row, 1, text)
+        if bold:
+            cell.font = Font(bold=True)
+
+    label(pp, "Bulk pricepoint (cards under this are bulk)")
+    c = ws.cell(pp, 6)
+    c.value, c.number_format, c.fill = pricepoint, "$0.00", tint
+    label(rt, "Offer rate for cards at/above the pricepoint")
+    c = ws.cell(rt, 6)
+    c.value, c.number_format, c.fill = rate, "0%", tint
+
+    rows = [
+        (trow + 4, "Bulk commons & rares — $5 per 1,000",
+         f'=SUMPRODUCT({under}*({cls}="cr"),{qty})', f"=E{trow + 4}*5/1000"),
+        (trow + 5, "Bulk foils & others — $30 per 1,000",
+         f'=SUMPRODUCT({under}*({cls}="foil"),{qty})', f"=E{trow + 5}*30/1000"),
+        (trow + 6, "Cards at/above the pricepoint (market value)",
+         f"=SUMPRODUCT({over},{qty})", f"=SUMPRODUCT({over},{line})"),
+    ]
+    for row, text, qf, gf in rows:
+        label(row, text)
+        ws.cell(row, 5).value = qf
+        g = ws.cell(row, 7)
+        g.value, g.number_format = gf, "$0.00"
+    label(trow + 7, "OFFER TOTAL", bold=True)
+    g = ws.cell(trow + 7, 7)
+    g.value = f"=G{trow + 4}+G{trow + 5}+G{trow + 6}*$F${rt}"
+    g.number_format, g.font = "$0.00", Font(bold=True)
+
+
 def write_workbook(path, cards, timestamp=""):
     """cards must already carry ["options"] from build_options."""
     from openpyxl import Workbook
@@ -400,53 +455,7 @@ def write_workbook(path, cards, timestamp=""):
     first = 3 if timestamp else 2
     last = r - 1
     if r > first:
-        ws.cell(r + 1, 1, "Total").font = Font(bold=True)
-        ws.cell(r + 1, 2).value = (
-            f'=COUNTA(B{first}:B{last})&" of "&COUNTA(A{first}:A{last})&" cards chosen"')
-        ws.cell(r + 1, 5).value = f"=SUM(E{first}:E{last})"  # total physical cards
-        total = ws.cell(r + 1, 7)
-        total.value = f"=SUM(G{first}:G{last})"
-        total.number_format = "$0.00"
-        total.font = Font(bold=True)
-
-        # --- the offer: bulk under a pricepoint, a percentage above it ------
-        tint = PatternFill("solid", fgColor=TINT)
-        pp, rt = r + 3, r + 4
-        num = f"ISNUMBER(F{first}:F{last})"
-        under = f"{num}*(F{first}:F{last}<$F${pp})"
-        over = f"{num}*(F{first}:F{last}>=$F${pp})"
-        cls = f"$K${first}:$K${last}"
-        qty, line = f"E{first}:E{last}", f"G{first}:G{last}"
-
-        def label(row, text, bold=False):
-            cell = ws.cell(row, 1, text)
-            if bold:
-                cell.font = Font(bold=True)
-
-        label(pp, "Bulk pricepoint (cards under this are bulk)")
-        c = ws.cell(pp, 6)
-        c.value, c.number_format, c.fill = 1.0, "$0.00", tint
-        label(rt, "Offer rate for cards at/above the pricepoint")
-        c = ws.cell(rt, 6)
-        c.value, c.number_format, c.fill = 0.65, "0%", tint
-
-        rows = [
-            (r + 5, "Bulk commons & rares — $5 per 1,000",
-             f'=SUMPRODUCT({under}*({cls}="cr"),{qty})', f"=E{r + 5}*5/1000"),
-            (r + 6, "Bulk foils & others — $30 per 1,000",
-             f'=SUMPRODUCT({under}*({cls}="foil"),{qty})', f"=E{r + 6}*30/1000"),
-            (r + 7, "Cards at/above the pricepoint (market value)",
-             f"=SUMPRODUCT({over},{qty})", f"=SUMPRODUCT({over},{line})"),
-        ]
-        for row, text, qf, gf in rows:
-            label(row, text)
-            ws.cell(row, 5).value = qf
-            g = ws.cell(row, 7)
-            g.value, g.number_format = gf, "$0.00"
-        label(r + 8, "OFFER TOTAL", bold=True)
-        g = ws.cell(r + 8, 7)
-        g.value = f"=G{r + 5}+G{r + 6}+G{r + 7}*$F${rt}"
-        g.number_format, g.font = "$0.00", Font(bold=True)
+        _write_summary(ws, first, last, r + 1)
 
     for col, width in zip("ABCDEFGHIJ", (32, 34, 34, 13, 5, 10, 10, 9, 40, 16)):
         ws.column_dimensions[col].width = width
@@ -481,10 +490,11 @@ def refresh_workbook(path, timestamp="", progress=None):
     old_opts_max = opts.max_row
 
     # data rows end at the Total row; ranges come from each row's Set formula
-    data_rows, ranges = [], {}
+    data_rows, ranges, total_row = [], {}, None
     for r in range(2, ws.max_row + 1):
         a = ws.cell(r, 1).value
         if a == "Total":
+            total_row = r
             break
         if not a or str(a).startswith("Prices:"):
             continue
@@ -574,6 +584,19 @@ def refresh_workbook(path, timestamp="", progress=None):
             opts.cell(r, 4 + i).value = priced["price"] if priced else None
             opts.cell(r, 9 + i).value = (
                 "" if priced is None else ("yes" if priced["verified"] else "no"))
+
+    # hand-added rows sit below the original ranges — re-anchor the Total row
+    # and offer block to the current data extent, keeping the user's inputs
+    if data_rows and total_row:
+        def keep(row, default):
+            v = ws.cell(row, 6).value
+            return v if isinstance(v, (int, float)) else default
+        _write_summary(ws, data_rows[0], data_rows[-1], total_row,
+                       pricepoint=keep(total_row + 2, 1.0),
+                       rate=keep(total_row + 3, 0.65))
+    for r in data_rows:
+        if not ws.cell(r, 10).value:
+            ws.cell(r, 10).value = "no photo"  # added by hand, not scanned
 
     if timestamp and str(ws["A2"].value or "").startswith("Prices:"):
         ws["A2"] = ("Prices: lowest verified TCGPlayer listing in the chosen "
@@ -752,6 +775,31 @@ def selftest():
         assert wb2["Cards"]["A14"].value == "OFFER TOTAL"
         assert wb2["Cards"]["G14"].value == "=G11+G12+G13*$F$10"
         assert wb2["Cards"].column_dimensions["K"].hidden
+
+        # a row hand-added past the range boundary joins the math on refresh
+        ws2 = wb2["Cards"]
+        ws2.insert_rows(6)
+        ws2.cell(6, 1, "Added Card")
+        ws2.cell(6, 5, 2)
+        wb2.save(p)
+        tcgplayer_pricing.get_lowest_price_safe = (
+            lambda pid, condition=None, **kw: {"price": 9.99, "seller": "s", "verified": True})
+        scan_cards.db_lookup = lambda name, code, snippet=None: (name, [])
+        _IDX = ({}, {})
+        try:
+            refresh_workbook(p, "2026-08-02")
+        finally:
+            (tcgplayer_pricing.get_lowest_price_safe, scan_cards.db_lookup,
+             tcgplayer_catalog.find_group_id) = real
+            _IDX = None
+        wb3 = load_workbook(p)
+        ws3 = wb3["Cards"]
+        assert ws3["A8"].value == "Total"
+        assert ws3["G8"].value == "=SUM(G3:G6)", ws3["G8"].value   # re-anchored
+        assert "F3:F6" in ws3["E12"].value, ws3["E12"].value       # offer ranges too
+        assert ws3["F10"].value == 1.0                              # inputs preserved
+        assert ws3["J6"].value == "no photo"                        # hand-added stamp
+        assert ws3["J3"].value == "a.jpg"                           # scanned rows keep theirs
     print("selftest OK")
 
 
