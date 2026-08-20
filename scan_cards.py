@@ -114,6 +114,49 @@ def read_photo(client, path):
     return json.loads(text)["cards"]
 
 
+# Dragon Shield's rarity abbreviations → the names the databases use.
+# Unknown abbreviations pass through as None — the dropdown handles it.
+RARITY_ABBR = {"C": "Common", "R": "Rare", "SP": "Short Print",
+               "SR": "Super Rare", "UR": "Ultra Rare", "ScR": "Secret Rare",
+               "UtR": "Ultimate Rare", "GR": "Gold Rare", "GhR": "Ghost Rare",
+               "PScR": "Prismatic Secret Rare", "PlScR": "Platinum Secret Rare",
+               "QCScR": "Quarter Century Secret Rare", "StR": "Starlight Rare",
+               "CR": "Collector's Rare", "PG": "Premium Gold Rare",
+               "SFR": "Starfoil Rare", "MSR": "Mosaic Rare"}
+
+
+def _ds_condition(s):
+    """DragonShield "NearMint" → TCGPlayer "Near Mint"; unknowns → NM."""
+    import re
+    spaced = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", s.strip())
+    known = ("Near Mint", "Lightly Played", "Moderately Played",
+             "Heavily Played", "Damaged")
+    return spaced if spaced in known else "Near Mint"
+
+
+def parse_dragonshield_csv(path):
+    """A Dragon Shield portfolio export → the same card rows a scan produces,
+    but with exact set codes, quantities, and per-card conditions."""
+    import csv
+    rows = []
+    with open(path, newline="", encoding="utf-8-sig") as f:
+        if not f.readline().lstrip('"').startswith("sep="):
+            f.seek(0)  # some exports lack the (possibly quoted) separator hint
+        for row in csv.DictReader(f):
+            qty = int(row.get("Quantity") or 0)
+            name = (row.get("Card Name") or "").strip()
+            if not qty or not name:
+                continue
+            rows.append({
+                "name": name,
+                "set_code": (row.get("Card Number") or "").strip() or None,
+                "qty": qty,
+                "condition": _ds_condition(row.get("Condition") or ""),
+                "rarity_guess": RARITY_ABBR.get((row.get("Rarity") or "").strip()),
+            })
+    return rows
+
+
 def code_matches(guess, actual):
     """Partial-read set codes match on their readable characters only —
     '?' and other junk the model emits for glare are wildcards; a short
@@ -205,6 +248,27 @@ def selftest():
             assert media == "image/jpeg" and raw[:2] == b"\xff\xd8", media
     except ImportError:
         pass
+
+    import os
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:  # Dragon Shield CSV parsing
+        p = os.path.join(d, "ds.csv")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write('"sep=,"\n'
+                    "Folder Name,Quantity,Trade Quantity,Card Name,Set Code,"
+                    "Set Name,Card Number,Rarity,Condition,Printing,Language,"
+                    "Price Bought,Date Bought,LOW,MID,MARKET\n"
+                    "Ryan,2,0,Abaki,CDIP,Cyberdark Impact,CDIP-EN013,C,NearMint,"
+                    "1st Edition,English,0.19,2026-05-16,0.01,0.22,0.16\n"
+                    "Ryan,0,0,Skipped,X,X,X-001,C,NearMint,,,,,,,\n"
+                    "Ryan,1,0,Ally of Justice Nullfier,HA02,Hidden Arsenal 2,"
+                    "HA02-EN018,SR,LightlyPlayed,Unlimited,English,,,,,\n")
+        rows = parse_dragonshield_csv(p)
+        assert len(rows) == 2, rows  # qty-0 row dropped
+        assert rows[0] == {"name": "Abaki", "set_code": "CDIP-EN013", "qty": 2,
+                           "condition": "Near Mint", "rarity_guess": "Common"}, rows[0]
+        assert rows[1]["condition"] == "Lightly Played"
+        assert rows[1]["rarity_guess"] == "Super Rare"
 
     assert code_matches("SKE-EN0??", "SKE-EN020")
     assert code_matches("SKE-EN..?", "SKE-EN020")

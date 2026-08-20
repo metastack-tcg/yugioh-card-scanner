@@ -215,7 +215,10 @@ class App:
         self.src = tk.Label(left, text="No photos selected", font=sans(10), fg=MUTED,
                             bg=PAPER, anchor="w", wraplength=270, justify="left")
         self.src.pack(fill="x", pady=(4, 8))
-        UnderlineAction(left, "Choose photos →", self.browse).pack(anchor="w")
+        acts = tk.Frame(left, bg=PAPER)
+        acts.pack(fill="x")
+        UnderlineAction(acts, "Choose photos →", self.browse).pack(side="left")
+        UnderlineAction(acts, "Import CSV →", self.import_csv).pack(side="left", padx=(16, 0))
 
         self.scan_btn = tk.Label(left, text="Scan", font=sans(10), fg=FAINT,
                                  bg=HAIRLINE, pady=8, cursor="arrow")
@@ -400,6 +403,68 @@ class App:
         finally:
             self.root.after(0, self.done)
 
+    def import_csv(self):
+        """A Dragon Shield portfolio export — same pipeline as a scan, minus
+        the vision (exact codes and conditions come free; no API key needed)."""
+        log(f"import csv clicked: scanning={self.scanning} working={self.working}")
+        if self.scanning or self.working:
+            self.say("Still busy with the previous job — wait for it to finish.")
+            return
+        path = filedialog.askopenfilename(
+            title="Dragon Shield export", filetypes=[("CSV", "*.csv")])
+        if not path:
+            return
+        try:
+            rows = scan_cards.parse_dragonshield_csv(path)
+        except Exception as e:
+            messagebox.showerror("Couldn't read that CSV", str(e))
+            return
+        if not rows:
+            messagebox.showwarning("Nothing to import", "No card rows in that file.")
+            return
+        self.scanning = True
+        self.cards = []
+        self.src.config(text=f"{Path(path).name}\n({len(rows)} rows)", fg=INK)
+        self.phase("Starting import")
+        self._tick()
+        self.build_rows()
+        self.export_act.enable(False)
+        threading.Thread(target=self._import_worker, args=(rows,), daemon=True).start()
+
+    def _import_worker(self, rows):
+        # collection exports run thousands of rows: resolve on a pool, and
+        # skip per-card table rebuilds (O(n^2) widget churn freezes tkinter —
+        # done() renders once at the end)
+        from concurrent.futures import ThreadPoolExecutor
+        import buylist
+        try:
+            self.root.after(0, self.phase, "Preparing the catalog index")
+            buylist._global_index()  # build once, not from eight threads at once
+            done = 0
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                resolved = pool.map(
+                    lambda rw: buylist.resolve_candidates(rw["name"], rw["set_code"]),
+                    rows)
+                for rw, (cname, cands) in zip(rows, resolved):
+                    done += 1
+                    self.root.after(0, self.phase,
+                                    f"Resolving cards — {done} of {len(rows)}")
+                    card = {"photo": "no photo", "name": cname,
+                            "read_code": rw["set_code"] or "",
+                            "sets": cands, "guess": rw["rarity_guess"] or "",
+                            "qty": rw["qty"], "condition": rw["condition"],
+                            "set_code": "", "set_name": "", "rarities": [], "rarity": ""}
+                    if len(cands) == 1:
+                        resolve_set(card, cands[0])
+                    self.root.after(0, self.add_card, card, False)
+        except Exception as e:
+            import traceback
+            log("csv import died:\n" + traceback.format_exc())
+            self.root.after(0, messagebox.showerror, "Import failed",
+                            f"{type(e).__name__}: {e}\n\nDetails in {LOG}")
+        finally:
+            self.root.after(0, self.done)
+
     def _read_with_retry(self, client, path, name, i):
         """529/rate-limit blips pass in seconds — wait them out before
         giving up on a page (the SDK's own two retries come first)."""
@@ -430,12 +495,13 @@ class App:
         done.wait(timeout=300)  # if the dialog somehow never resolves, keep the page
         return result.get("ok", True)
 
-    def add_card(self, card):
+    def add_card(self, card, rebuild=True):
         # no auto-merging: identical vision reads can still be two different
         # printings, so every physical card keeps its own row — the seller
         # consolidates via the editable Qty column in Excel if they want to
         self.cards.append(card)
-        self.build_rows()
+        if rebuild:
+            self.build_rows()
         n = len(self.cards)
         self.hero.config(text=str(n))
         self.hero_sub.config(text=f"card{'s' if n != 1 else ''} found")
@@ -443,6 +509,7 @@ class App:
     def done(self):
         self.scanning = False
         self._phase = None
+        self.build_rows()  # imports defer per-card rebuilds to here
         self.scan_btn.config(bg=ACCENT, fg=ON_ACCENT, cursor="hand2",
                              text=f"Scan {len(self.photos)} photo{'s' if len(self.photos) != 1 else ''}")
         self.export_act.enable(bool(self.cards))

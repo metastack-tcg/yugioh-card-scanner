@@ -437,7 +437,7 @@ def write_workbook(path, cards, timestamp=""):
             orow = hi + 1
             _wire_row(ws, r, lo, hi)
             cond_dv.add(ws.cell(r, 4).coordinate)
-            ws.cell(r, 4).value = DEFAULT_CONDITION
+            ws.cell(r, 4).value = c.get("condition") or DEFAULT_CONDITION
 
             labels = [o["label"] for o in c["options"]]
             pre = f"{c['set_code']} · {c['rarity']}" if c["set_code"] and c["rarity"] else None
@@ -703,7 +703,7 @@ def selftest():
          "sets": [], "options": []},
         {"name": "Witness of the Ancient", "photo": "b.jpg", "set_code": "CORI-EN012",
          "rarity": "Ultra Rare", "guess": "ultra rare (extended art)", "qty": 3,
-         "sets": [],
+         "condition": "Lightly Played", "sets": [],
          "options": [opt("CORI-EN012 · Ultra Rare", 0.50, 611001),
                      opt("CORI-EN012 · Ultra Rare (Extended Art)", 4.00, 611002)]},
     ]
@@ -717,6 +717,7 @@ def selftest():
         assert ws["B3"].value == "RA01-EN021 · Secret Rare"       # preselected
         assert ws["D3"].value == "Near Mint"                      # default condition
         assert ws["E3"].value == 1 and ws["E5"].value == 3        # qty column
+        assert ws["D5"].value == "Lightly Played"                 # per-card condition
         assert "IF(INDEX" in ws["F3"].value and "MATCH($D3" in ws["F3"].value, ws["F3"].value
         assert ws["G3"].value == '=IFERROR($E3*$F3,"")'           # qty x unit
         # one printing dropdown per card with options + the shared condition list
