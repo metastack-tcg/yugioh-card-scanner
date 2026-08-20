@@ -104,6 +104,19 @@ def _get_normalized(mapping, code, rarity):
     return contains[0] if len(contains) == 1 else None
 
 
+def _conditions_to_price(declared, n):
+    """Which conditions get a live price. Declared ones (CSV imports, seller
+    condition picks) plus Near Mint always; the full five only for small
+    all-default batches (scanned binders), where the extra requests are cheap
+    and let the seller flip conditions in Excel and see prices immediately.
+    ponytail: unpriced conditions show blank until a re-price after they're
+    chosen — the 5x request cut is what keeps whale CSV exports from hanging."""
+    conds = sorted(set(declared) | {DEFAULT_CONDITION})
+    if conds == [DEFAULT_CONDITION] and n <= 150:
+        return list(CONDITIONS)
+    return conds
+
+
 def _price_jobs(jobs, progress=None):
     """{(product_id, condition): priced_or_None} — concurrent, deduped by caller."""
     prices = {}
@@ -265,12 +278,11 @@ def build_options(cards, progress=None, status=None):
                         {"label": f"{cand['set_code']} · {rarity} (Extended Art)",
                          "set_name": cand["set_name"], "product": ea_key})
 
-    # one request per (product, condition) — 5x the calls of NM-only, so a
-    # binder page lands around 100-250 requests; dedup + the scraper's thread
-    # pool keep it to about a minute
+    conds = _conditions_to_price(
+        [c.get("condition") for c in cards if c.get("condition")], len(cards))
     jobs = {(o["product"]["productId"], cond)
             for c in cards for o in c["options"] if o["product"]
-            for cond in CONDITIONS}
+            for cond in conds}
     prices = _price_jobs(jobs, progress)
 
     for c in cards:
@@ -570,16 +582,22 @@ def refresh_workbook(path, timestamp="", progress=None):
             _wire_row(ws, r, *ranges[r])
             cond_dv.add(ws.cell(r, 4).coordinate)
 
-    # re-price the pre-existing option rows (new ones were priced just now)
+    # re-price the pre-existing option rows (new ones were priced just now),
+    # in the conditions this workbook actually uses
+    declared = [str(ws.cell(r, 4).value) for r in data_rows
+                if ws.cell(r, 4).value in CONDITIONS]
+    conds = _conditions_to_price(declared, len(data_rows))
     rows = []  # (options_row, product_id)
     for r in range(2, old_opts_max + 1):
         m = PRODUCT_URL_RE.search(opts.cell(r, 3).value or "")
         if m:
             rows.append((r, int(m.group(1))))
-    prices = _price_jobs({(pid, cond) for _, pid in rows for cond in CONDITIONS},
+    prices = _price_jobs({(pid, cond) for _, pid in rows for cond in conds},
                          progress)
     for r, pid in rows:
         for i, cond in enumerate(CONDITIONS):
+            if cond not in conds:
+                continue  # not re-priced this run — keep whatever's there
             priced = prices.get((pid, cond))
             opts.cell(r, 4 + i).value = priced["price"] if priced else None
             opts.cell(r, 9 + i).value = (
@@ -676,6 +694,11 @@ def selftest():
     finally:
         scan_cards.db_lookup = real_db
         _IDX = None
+
+    # which conditions get priced: declared + NM; full five only for small scans
+    assert _conditions_to_price([], 3) == list(CONDITIONS)
+    assert _conditions_to_price([], 2000) == ["Near Mint"]
+    assert _conditions_to_price(["Lightly Played"], 2000) == ["Lightly Played", "Near Mint"]
 
     # rarity-name reconciliation between the two databases
     m = {("X-EN001", "prismatic collector's rare"): "PCR",

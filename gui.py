@@ -615,9 +615,12 @@ class App:
         t0 = time.time()
         try:
             note("Looking up printings…")
+            # throttled: 12k per-result callbacks would flood the tk event
+            # loop and freeze the window on collection-sized exports
             buylist.build_options(
                 self.cards, status=note,
-                progress=lambda d, t: note(f"Pricing… {d} of {t}"))
+                progress=lambda d, t: (d % 25 == 0 or d == t)
+                and note(f"Pricing… {d} of {t}"))
             log(f"export: options+pricing {time.time() - t0:.0f}s "
                 f"({sum(len(c['options']) for c in self.cards)} options)")
             note("Writing workbook…")
@@ -665,7 +668,8 @@ class App:
         try:
             n = buylist.refresh_workbook(
                 path, datetime.date.today().isoformat(),
-                progress=lambda d, t: note(f"Re-pricing… {d} of {t}"))
+                progress=lambda d, t: (d % 25 == 0 or d == t)
+                and note(f"Re-pricing… {d} of {t}"))
         except PermissionError:
             self.root.after(0, messagebox.showerror, "File is open",
                             "Close the workbook in Excel first, then try again.")
