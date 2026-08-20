@@ -10,7 +10,9 @@ on their end, just Excel.
 1. **Scan** — pick the seller's binder photos, hit Scan. Claude vision reads
    each card's name, set code, and foil treatment (it handles glare and foil
    text that break normal OCR). Cards resolve against two databases; anything
-   uncertain shows in orange for a click.
+   uncertain shows in orange for a click. **Or Import CSV** — a Dragon Shield
+   portfolio export goes through the same pipeline with better inputs (exact
+   card numbers, quantities, per-card conditions) and needs no API key.
 2. **Export to Excel** — every candidate printing of every card is priced
    (lowest verified TCGPlayer listing, all five conditions) and written into
    a workbook with per-row dropdowns. Send it to the seller.
